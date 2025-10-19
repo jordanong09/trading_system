@@ -1,0 +1,16 @@
+name: app
+channels: [conda-forge]
+dependencies:
+  - python=3.11
+  - blas=*=openblas
+  - numpy>=1.26
+  - pandas
+  - scipy
+  - scikit-learn
+  - uvicorn
+  - fastapi
+  - ipykernel
+  - pip
+  - pip:
+      - black
+      - ruff

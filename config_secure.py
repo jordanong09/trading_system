@@ -105,6 +105,7 @@ BREAKOUT_VOLUME_MULTIPLIER = 1.2
 # Candlestick Patterns
 VOLUME_SURGE_MULTIPLIER = 1.5
 HAMMER_WICK_RATIO = 2.0
+SHOOTING_STAR_WICK_RATIO = 2.0
 
 # ============================================================================
 # CONFLUENCE SCORING (7 POINTS)

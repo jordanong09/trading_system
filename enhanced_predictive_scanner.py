@@ -15,6 +15,7 @@ from modules.alphavantage_client_optimized import OptimizedAlphaVantageClient, M
 from modules.data_manager import DataManager
 from modules.pattern_detector import PatternDetector
 from modules.technical_indicators import TechnicalIndicators
+from modules.chart_patterns import ChartPatterns
 from telegram_sender import TelegramSender
 import config_secure as config
 
@@ -76,6 +77,8 @@ class EnhancedPredictiveScanner:
         self.data_manager = DataManager(cache_dir=cache_dir)
         self.telegram = TelegramSender(telegram_bot, telegram_chat)
         self.detector = PatternDetector(vars(config))
+        self.chart_detector = ChartPatterns({'SYMBOL': 'UNKNOWN'})
+
         
         # Scanner state
         self.symbols = []
@@ -469,15 +472,14 @@ class EnhancedPredictiveScanner:
     def scan_predictive_enhanced(self, minutes_before_close: int = 5):
         """
         PREDICTIVE SCAN - T-5 minutes before candle close
-        
-        CRITICAL: Only fetches 1h OHLCV
-        Daily indicators read from cache (zero API calls for indicators)
+        NOW WITH CHART PATTERNS (18 total patterns)
         """
         et_now = MarketScheduler.get_et_now()
         
         print(f"\n{'='*80}")
         print(f"🔮 PREDICTIVE SCAN: {et_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         print(f"   T-{minutes_before_close} min before candle close")
+        print(f"   Scanning for 18 patterns (12 candlestick + 6 chart)")
         print(f"{'='*80}\n")
         
         if not self.daily_cache_valid:
@@ -523,21 +525,85 @@ class EnhancedPredictiveScanner:
                     stock_data['full_data']
                 )
                 
-                # Detect patterns on 1h data
+                # ================================================================
+                # PATTERN DETECTION - CANDLESTICK PATTERNS (1H timeframe)
+                # ================================================================
                 df_pattern = stock_data['full_data'].copy()
                 recent_df = df_pattern.iloc[-10:].copy()
                 patterns_found = []
                 
-                for pattern_func in [
+                # Detect all 12 candlestick patterns
+                candlestick_patterns = [
                     self.detector.detect_bullish_engulfing,
                     self.detector.detect_bearish_engulfing,
                     self.detector.detect_hammer,
                     self.detector.detect_shooting_star,
-                    self.detector.detect_breakout
-                ]:
+                    self.detector.detect_morning_star,
+                    self.detector.detect_evening_star,
+                    self.detector.detect_three_white_soldiers,
+                    self.detector.detect_three_black_crows,
+                    self.detector.detect_bullish_abandoned_baby,
+                    self.detector.detect_bearish_abandoned_baby,
+                    self.detector.detect_breakout,
+                    self.detector.detect_bearish_breakdown
+                ]
+                
+                for pattern_func in candlestick_patterns:
                     detections = pattern_func(recent_df)
                     if detections and detections[-1]['date'] == df_pattern.iloc[-1]['Date']:
-                        patterns_found.append(detections[-1])
+                        pattern = detections[-1]
+                        pattern['pattern_type'] = 'CANDLESTICK'
+                        pattern['timeframe'] = '1H'
+                        patterns_found.append(pattern)
+                
+                # ================================================================
+                # PATTERN DETECTION - CHART PATTERNS (1H timeframe)
+                # ================================================================
+                if len(df_pattern) >= 60:  # Need sufficient data for chart patterns
+                    print(f"   📊 {symbol}: Checking chart patterns...")
+                    
+                    # Update chart detector config with current symbol
+                    self.chart_detector.config['SYMBOL'] = symbol
+                    
+                    # Detect all 6 chart patterns on 1H timeframe
+                    chart_patterns_1h = self.chart_detector.detect_all_patterns(df_pattern, timeframe='1H')
+                    
+                    # Only include patterns detected on most recent bar
+                    for chart_pattern in chart_patterns_1h:
+                        # Check if pattern is recent (within last 5 bars)
+                        pattern_date = chart_pattern['date']
+                        if pattern_date >= df_pattern.iloc[-5]['Date']:
+                            chart_pattern['pattern_type'] = 'CHART'
+                            chart_pattern['timeframe'] = '1H'
+                            patterns_found.append(chart_pattern)
+                            print(f"      ✅ Found: {chart_pattern['pattern']}")
+                
+                # ================================================================
+                # PATTERN DETECTION - CHART PATTERNS (DAILY timeframe)
+                # ================================================================
+                # For Daily chart patterns, we need daily data
+                # Try to get daily data from Alpha Vantage
+                try:
+                    daily_stock_data = self.av_client.fetch_intraday(symbol, interval='daily')
+                    if daily_stock_data and 'full_data' in daily_stock_data:
+                        df_daily = daily_stock_data['full_data']
+                        
+                        if len(df_daily) >= 60:
+                            print(f"   📅 {symbol}: Checking DAILY chart patterns...")
+                            
+                            # Detect chart patterns on Daily timeframe
+                            chart_patterns_daily = self.chart_detector.detect_all_patterns(df_daily, timeframe='Daily')
+                            
+                            # Only include recent patterns
+                            for chart_pattern in chart_patterns_daily:
+                                pattern_date = chart_pattern['date']
+                                if pattern_date >= df_daily.iloc[-5]['Date']:
+                                    chart_pattern['pattern_type'] = 'CHART'
+                                    chart_pattern['timeframe'] = 'Daily'
+                                    patterns_found.append(chart_pattern)
+                                    print(f"      ✅ Found: {chart_pattern['pattern']} (Daily)")
+                except Exception as e:
+                    print(f"      ⚠️  Could not fetch daily data: {e}")
                 
                 if not patterns_found:
                     continue
@@ -546,10 +612,14 @@ class EnhancedPredictiveScanner:
                 stock_context = self._build_stock_context(stock_data, stock_daily, current_price)
                 index_context = self._build_index_context(index_data, index_daily)
                 
-                # Evaluate confluence with index awareness
+                # ================================================================
+                # EVALUATE EACH PATTERN WITH ENHANCED CONFLUENCE
+                # ================================================================
                 for pattern in patterns_found:
-                    confluence = self._evaluate_index_aware_confluence(
+                    # Enhanced confluence with chart pattern awareness
+                    confluence = self._evaluate_enhanced_confluence(
                         pattern['bias'],
+                        pattern,
                         stock_context,
                         index_context,
                         enhanced_data['support_resistance'],
@@ -571,12 +641,21 @@ class EnhancedPredictiveScanner:
                         
                         predicted_signals.append(signal)
                         
-                        print(f"   🎯 {symbol}: {pattern['pattern']}")
+                        pattern_label = f"{pattern['pattern']} ({pattern['pattern_type']}, {pattern['timeframe']})"
+                        print(f"   🎯 {symbol}: {pattern_label}")
                         print(f"      Signal: {confluence['recommendation']} ({confluence['percentage']:.0f}%)")
-                        print(f"      Index backdrop: {'Supportive' if index_context['above_ema20'] else 'Unsupportive'}")
-                
+                        
+                        # Show chart pattern specific info
+                        if pattern['pattern_type'] == 'CHART':
+                            completion_rate = pattern.get('historical_completion_rate', 0) * 100
+                            print(f"      Completion Rate: {completion_rate:.0f}%")
+                            if 'measured_move_pct' in pattern:
+                                print(f"      Measured Move: {pattern['measured_move_pct']:.1f}%")
+            
             except Exception as e:
                 print(f"   ❌ Error analyzing {stock_data.get('symbol', 'UNKNOWN')}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
         
         # Send predictive alerts
@@ -587,7 +666,7 @@ class EnhancedPredictiveScanner:
             
             for signal in predicted_signals:
                 try:
-                    alert_msg = self._format_compliant_alert(signal, status="PENDING")
+                    alert_msg = self._format_enhanced_compliant_alert(signal, status="PENDING")
                     self.telegram.send_message(alert_msg, parse_mode="HTML")
                 except ValueError as e:
                     print(f"   ❌ {signal['symbol']}: Non-compliant message blocked - {e}")
@@ -669,6 +748,200 @@ class EnhancedPredictiveScanner:
             'recommendation': recommendation,
             'reasons': reasons
         }
+    
+    def _evaluate_enhanced_confluence(self, pattern_bias: str, pattern: Dict,
+                                 stock_context: Dict, index_context: Dict, 
+                                 sr_levels: Dict, breakout: Dict) -> Dict:
+        """
+        ENHANCED confluence with chart pattern awareness
+        
+        Total: 10 points (increased from 8)
+        
+        Scoring:
+        - Index backdrop alignment (3 points) - INCREASED from 2
+        - Stock vs EMA20 alignment (2 points)
+        - Near horizontal S/R level (2 points)
+        - Breakout imminent (1 point) - DECREASED from 2
+        - Chart pattern completion rate (1 point) - NEW
+        - Multi-timeframe alignment (1 point) - NEW
+        """
+        score = 0
+        max_score = 10
+        reasons = []
+        
+        # ====================================================================
+        # FACTOR 1: Index backdrop alignment (3 points) - HIGHLY PREDICTIVE
+        # ====================================================================
+        if index_context['above_ema20'] is not None:
+            index_strength = index_context['above_ema20']
+            
+            if pattern_bias == "BULLISH" and index_strength:
+                score += 3
+                reasons.append(f"✅ Index ({index_context['name']}) above EMA20 (strong support)")
+            elif pattern_bias == "BEARISH" and not index_strength:
+                score += 3
+                reasons.append(f"✅ Index ({index_context['name']}) below EMA20 (strong support)")
+            else:
+                reasons.append(f"⚠️  Index backdrop unsupportive for {pattern_bias} pattern")
+        
+        # ====================================================================
+        # FACTOR 2: Stock vs EMA20 alignment (2 points)
+        # ====================================================================
+        if stock_context['above_ema20'] is not None:
+            if pattern_bias == "BULLISH" and stock_context['above_ema20']:
+                score += 2
+                reasons.append(f"✅ Stock above daily EMA20 (${stock_context['ema20']:.2f})")
+            elif pattern_bias == "BEARISH" and not stock_context['above_ema20']:
+                score += 2
+                reasons.append(f"✅ Stock below daily EMA20 (${stock_context['ema20']:.2f})")
+        
+        # ====================================================================
+        # FACTOR 3: Near horizontal S/R level (2 points)
+        # ====================================================================
+        if pattern_bias == "BULLISH":
+            support_levels = sr_levels.get('support', [])
+            if support_levels and support_levels[0]['distance_pct'] < 2:
+                score += 2
+                reasons.append(f"✅ Near support @ ${support_levels[0]['price']:.2f}")
+        elif pattern_bias == "BEARISH":
+            resistance_levels = sr_levels.get('resistance', [])
+            if resistance_levels and resistance_levels[0]['distance_pct'] < 2:
+                score += 2
+                reasons.append(f"✅ Near resistance @ ${resistance_levels[0]['price']:.2f}")
+        
+        # ====================================================================
+        # FACTOR 4: Breakout imminent (1 point) - REDUCED WEIGHT
+        # ====================================================================
+        if breakout.get('breakout_imminent') and breakout['direction'] == pattern_bias:
+            score += 1
+            reasons.append(f"✅ Breakout imminent ({breakout['direction']})")
+        
+        # ====================================================================
+        # FACTOR 5: Chart pattern completion rate (1 point) - NEW
+        # ====================================================================
+        if pattern.get('pattern_type') == 'CHART':
+            completion_rate = pattern.get('historical_completion_rate', 0)
+            if completion_rate >= 0.70:  # 70%+ completion rate
+                score += 1
+                reasons.append(f"✅ High completion rate ({completion_rate*100:.0f}%)")
+        
+        # ====================================================================
+        # FACTOR 6: Multi-timeframe alignment (1 point) - NEW
+        # ====================================================================
+        # This would require checking if BOTH Daily and 1H have aligned patterns
+        # For now, we award this point if it's a Daily chart pattern (more reliable)
+        if pattern.get('timeframe') == 'Daily' and pattern.get('pattern_type') == 'CHART':
+            score += 1
+            reasons.append(f"✅ Daily timeframe pattern (higher reliability)")
+        
+        # ====================================================================
+        # Calculate final percentage and recommendation
+        # ====================================================================
+        percentage = (score / max_score) * 100
+        
+        if percentage >= 70:  # 7/10 or better
+            recommendation = "STRONG_SIGNAL"
+        elif percentage >= 60:  # 6/10
+            recommendation = "GOOD_SIGNAL"
+        elif percentage >= 50:  # 5/10
+            recommendation = "MODERATE_SIGNAL"
+        else:
+            recommendation = "WEAK_SIGNAL"
+        
+        return {
+            'confluence_score': score,
+            'max_score': max_score,
+            'percentage': percentage,
+            'recommendation': recommendation,
+            'reasons': reasons
+        }
+    
+
+    def _format_enhanced_compliant_alert(self, signal: Dict, status: str = "PENDING") -> str:
+        """
+        Format MAS-compliant Telegram alert WITH CHART PATTERN SUPPORT
+        """
+        symbol = signal['symbol']
+        pattern = signal['pattern']
+        stock_ctx = signal['stock_context']
+        index_ctx = signal['index_context']
+        
+        # Determine pattern type emoji
+        if pattern.get('pattern_type') == 'CHART':
+            pattern_emoji = "📊"
+        else:
+            pattern_emoji = "🕯️"
+        
+        # Build message with compliant language
+        msg = f"<b>{symbol} — {pattern.get('timeframe', '1H')} Analysis</b>\n\n"
+        
+        # Status
+        if status == "PENDING":
+            msg += "⚠️ <b>PATTERN FORMING (PENDING CLOSE)</b>\n\n"
+        elif status == "CONFIRMED":
+            msg += "✅ <b>PATTERN CONFIRMED (CLOSED)</b>\n\n"
+        elif status == "FAILED":
+            msg += "❌ <b>PATTERN FAILED (CLOSED)</b>\n\n"
+        
+        # Pattern observation with type indicator
+        pattern_name = self.telegram.escape(pattern.get('pattern', 'N/A'))
+        pattern_type_label = pattern.get('pattern_type', 'CANDLESTICK')
+        
+        msg += f"<b>Pattern Observed:</b> {pattern_emoji} {pattern_name}\n"
+        msg += f"<b>Type:</b> {pattern_type_label}\n"
+        msg += f"<b>Timeframe:</b> {pattern.get('timeframe', '1H')}\n"
+        msg += f"<b>Bias:</b> {self.telegram.escape(pattern.get('bias', 'N/A'))}\n"
+        msg += f"<b>Price:</b> ${stock_ctx['price']:.2f}\n"
+        
+        # Chart pattern specific info
+        if pattern.get('pattern_type') == 'CHART':
+            completion_rate = pattern.get('historical_completion_rate', 0)
+            if completion_rate > 0:
+                msg += f"<b>Historical Completion:</b> {completion_rate*100:.0f}%\n"
+            
+            if 'measured_move_pct' in pattern:
+                msg += f"<b>Measured Move:</b> {pattern['measured_move_pct']:.1f}%\n"
+            
+            if 'target_price' in pattern:
+                msg += f"<b>Pattern Target:</b> ${pattern['target_price']:.2f}\n"
+            
+            # Additional chart pattern details
+            if 'breakout_level' in pattern:
+                msg += f"<b>Breakout Level:</b> ${pattern['breakout_level']:.2f}\n"
+            elif 'resistance_level' in pattern:
+                msg += f"<b>Key Level:</b> ${pattern.get('resistance_level', pattern.get('support_level')):.2f}\n"
+        
+        msg += "\n"
+        
+        # Stock context (1h close vs daily EMA20)
+        msg += "<b>Stock Context (Daily Indicators):</b>\n"
+        if stock_ctx['ema20']:
+            position = "above" if stock_ctx['above_ema20'] else "below"
+            msg += f"• Close vs EMA20: {position} (${stock_ctx['ema20']:.2f})\n"
+        
+        # Near levels
+        if stock_ctx['near_levels']:
+            level = stock_ctx['near_levels'][0]
+            msg += f"• Near {level['name']}: ${level['value']:.2f} ({level['label']})\n"
+        
+        msg += "\n"
+        
+        # Index context
+        msg += f"<b>Index Context ({index_ctx['name']}, Daily):</b>\n"
+        if index_ctx['close'] and index_ctx['ema20']:
+            if index_ctx['above_ema20']:
+                msg += f"• Close ${index_ctx['close']:.2f} > EMA20 ${index_ctx['ema20']:.2f}\n"
+                msg += f"• Broader backdrop suggests supportive conditions\n"
+            else:
+                msg += f"• Close ${index_ctx['close']:.2f} < EMA20 ${index_ctx['ema20']:.2f}\n"
+                msg += f"• Broader backdrop suggests challenging conditions\n"
+        
+        msg += "\n"
+        msg += "─" * 40 + "\n"
+        msg += f"<i>{DISCLAIMER}</i>"
+        
+        # Sanitize before sending
+        return self._sanitize_message(msg)
     
     def scan_confirmation(self):
         """

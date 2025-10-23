@@ -17,6 +17,11 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 from scipy.signal import find_peaks
 from datetime import datetime
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class ChartPatterns:
@@ -24,6 +29,7 @@ class ChartPatterns:
     
     def __init__(self, config: dict = None):
         self.config = config or {}
+        logger.info("ChartPatterns detector initialized")
     
     # ============================================================================
     # 1. CUP & HANDLE PATTERN (Bullish Continuation - 68% completion)
@@ -136,8 +142,8 @@ class ChartPatterns:
                         'hold_period': '1-4 months' if timeframe == 'Daily' else '3-10 days'
                     })
             
-            except Exception:
-                continue
+            except Exception as e:
+                logger.error(f"Error in detect_cup_and_handle: {e}")
         
         return detections
     
@@ -660,24 +666,47 @@ class ChartPatterns:
     # BATCH DETECTION (All patterns at once)
     # ============================================================================
     
+    # Add this method at the end of the class
     def detect_all_patterns(self, df: pd.DataFrame, timeframe: str = 'Daily') -> List[Dict]:
         """
         Detect all 6 chart patterns on given timeframe
         
         Returns: Combined list of all detected patterns
         """
+        logger.info(f"Detecting all chart patterns on {timeframe} timeframe...")
+        
         all_detections = []
         
-        # Run all 6 pattern detectors
-        all_detections.extend(self.detect_cup_and_handle(df, timeframe))
-        all_detections.extend(self.detect_ascending_triangle(df, timeframe))
-        all_detections.extend(self.detect_descending_triangle(df, timeframe))
-        all_detections.extend(self.detect_bull_flag(df, timeframe))
-        all_detections.extend(self.detect_double_top(df, timeframe))
-        all_detections.extend(self.detect_double_bottom(df, timeframe))
-        
-        # Sort by date
-        all_detections = sorted(all_detections, key=lambda x: x['date'])
+        try:
+            # Run all 6 pattern detectors
+            detectors = [
+                ('Cup & Handle', self.detect_cup_and_handle),
+                ('Ascending Triangle', self.detect_ascending_triangle),
+                ('Descending Triangle', self.detect_descending_triangle),
+                ('Bull Flag', self.detect_bull_flag),
+                ('Double Top', self.detect_double_top),
+                ('Double Bottom', self.detect_double_bottom)
+            ]
+            
+            for pattern_name, detector_func in detectors:
+                try:
+                    detections = detector_func(df, timeframe)
+                    all_detections.extend(detections)
+                    
+                    if detections:
+                        logger.info(f"  ✅ {pattern_name}: {len(detections)} detected")
+                
+                except Exception as e:
+                    logger.error(f"  ❌ {pattern_name}: Error - {e}")
+                    continue
+            
+            # Sort by date
+            all_detections = sorted(all_detections, key=lambda x: x['date'])
+            
+            logger.info(f"Total chart patterns detected: {len(all_detections)}")
+            
+        except Exception as e:
+            logger.error(f"Error in detect_all_patterns: {e}")
         
         return all_detections
 

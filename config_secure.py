@@ -107,6 +107,11 @@ VOLUME_SURGE_MULTIPLIER = 1.5
 HAMMER_WICK_RATIO = 2.0
 SHOOTING_STAR_WICK_RATIO = 2.0
 
+# Moving Average Configurations
+MA_SR_PROXIMITY_PCT = 2.0
+TREND_ALIGNMENT_MIN = 3
+MIN_CONFLUENCE_FOR_ALERT = 3
+
 # ============================================================================
 # CONFLUENCE SCORING (7 POINTS)
 # ============================================================================

@@ -1,63 +1,16 @@
-# API Keys and Secrets - NEVER COMMIT
-config.py
-.env
-.env.local
-*.pem
-*.key
-secrets.json
-set_keys.*
+# Storage directories
+storage/cache/
+storage/output/
 
-# Cache and temporary files
-cache/
-*.pkl
-*.pickle
+# Keep input directory structure but ignore large files
+storage/input/*.csv
+!storage/input/stock_universe.csv  # Optional: commit your universe
+
+# Environment
+.env
+*.log
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-.Python
-
-# Logs
-logs/
-*.log
-
-# Output
-output/
-*.xlsx
-*.csv
-
-# Virtual environments
-venv/
-env/
-ENV/
-trading/
-.venv
-
-# VS Code
-.vscode/
-*.code-workspace
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-$RECYCLE.BIN/
-
-# IDE
-.idea/
-*.swp
-*.swo
-*~
-
-# Data files (optional - keep if needed)
-# data/*.csv
-# data/*.xlsx
-
-# Backups
-*.bak
-*.backup
-*.old

@@ -1,0 +1,15 @@
+{
+    "python.defaultInterpreterPath": "${env:USERPROFILE}\\conda-envs\\trading\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "python.analysis.typeCheckingMode": "basic",
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "cache/": false,
+        "logs/": false
+    },
+    "files.watcherExclude": {
+        "**/cache/**": true,
+        "**/logs/**": true
+    }
+}

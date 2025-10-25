@@ -1,2 +1,0 @@
-# trading_system
- 

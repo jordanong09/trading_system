@@ -257,6 +257,208 @@ class EnhancedPredictiveScanner:
         
         return cached_count > 0
     
+
+    def precache_historical_data(self):
+        """
+        PRE-CACHE HISTORICAL INTRADAY DATA (1H candles)
+        
+        Fetches 210 bars of 1H data (~30 trading days) for:
+        - All watchlist stocks
+        - SPY and QQQ indices
+        
+        This ensures we have sufficient history for:
+        - Chart pattern detection (needs 60+ bars)
+        - Technical analysis
+        - Support/resistance calculations
+        
+        Called at startup or when cache is invalid
+        """
+        et_now = MarketScheduler.get_et_now()
+        today = et_now.strftime("%Y-%m-%d")
+        
+        print(f"\n{'='*80}")
+        print(f"📊 PRE-CACHING HISTORICAL 1H DATA")
+        print(f"   Time: {et_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(f"   Target: All watchlist + SPY + QQQ")
+        print(f"   Bars: 210 x 1H candles (~30 trading days)")
+        print(f"{'='*80}\n")
+        
+        if not self.symbols:
+            print("❌ No symbols loaded, cannot pre-cache\n")
+            return False
+        
+        all_symbols = self.symbols + ["SPY", "QQQ"]
+        
+        cached_count = 0
+        failed_symbols = []
+        
+        for symbol in all_symbols:
+            try:
+                # Fetch 1H data with full history
+                intraday_data = self.av_client.fetch_intraday(
+                    symbol, 
+                    interval='60min'  # Get maximum history
+                )
+                
+                if intraday_data and 'full_data' in intraday_data:
+                    df = intraday_data['full_data']
+                    
+                    # Keep last 210 bars
+                    if len(df) > 210:
+                        df = df.tail(210).reset_index(drop=True)
+                    
+                    # Cache the data
+                    cache_key = f"intraday_1h_{symbol}_{today}.json"
+                    cache_path = os.path.join(self.cache_dir, cache_key)
+                    
+                    # Convert DataFrame to dict for JSON serialization
+                    # Convert timestamps to strings for JSON compatibility
+                    df_json = df.copy()
+                    df_json['Date'] = df_json['Date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    cache_data = {
+                        'symbol': symbol,
+                        'interval': '60min',
+                        'bars': len(df),
+                        'cached_at': et_now.isoformat(),
+                        'trading_day': today,
+                        'data': df_json.to_dict('records'),
+                        'latest_close': float(df.iloc[-1]['Close']) if len(df) > 0 else None
+                    }
+                    
+                    with open(cache_path, 'w') as f:
+                        json.dump(cache_data, f, indent=2)
+                    
+                    cached_count += 1
+                    latest_close = cache_data['latest_close']
+                    close_str = f"{latest_close:.2f}" if latest_close else "N/A"
+                    print(f"   ✅ {symbol}: {len(df)} bars cached, Latest Close={close_str}")
+                else:
+                    failed_symbols.append(symbol)
+                    print(f"   ⚠️  {symbol}: No data returned")
+                    
+            except Exception as e:
+                failed_symbols.append(symbol)
+                print(f"   ❌ {symbol}: {e}")
+        
+        print(f"\n{'='*80}")
+        print(f"✅ HISTORICAL DATA CACHE COMPLETE")
+        print(f"   Cached: {cached_count}/{len(all_symbols)} symbols")
+        if failed_symbols:
+            print(f"   Failed: {', '.join(failed_symbols)}")
+        print(f"{'='*80}\n")
+        
+        return cached_count > 0
+
+
+    def precache_daily_ohlcv_data(self):
+        """
+        PRE-CACHE DAILY OHLCV DATA (1D bars)
+        
+        Fetches 60 bars of daily data for:
+        - All watchlist stocks
+        - SPY and QQQ indices
+        
+        Uses 60min data aggregated to daily bars to ensure:
+        - Consistent data source (no separate API endpoint needed)
+        - Sufficient history for daily chart patterns (60 days)
+        - No invalid API calls
+        
+        Called at startup or when cache is invalid
+        """
+        et_now = MarketScheduler.get_et_now()
+        today = et_now.strftime("%Y-%m-%d")
+        
+        print(f"\n{'='*80}")
+        print(f"📅 PRE-CACHING DAILY (1D) OHLCV DATA")
+        print(f"   Time: {et_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        print(f"   Target: All watchlist + SPY + QQQ")
+        print(f"   Bars: 60 daily bars (~60 trading days)")
+        print(f"{'='*80}\n")
+        
+        if not self.symbols:
+            print("❌ No symbols loaded, cannot pre-cache\n")
+            return False
+        
+        all_symbols = self.symbols + ["SPY", "QQQ"]
+        
+        cached_count = 0
+        failed_symbols = []
+        
+        for symbol in all_symbols:
+            try:
+                # Fetch 60min data with full history
+                intraday_data = self.av_client.fetch_intraday(
+                    symbol, 
+                    interval='60min'  # Get maximum history
+                )
+                
+                if intraday_data and 'full_data' in intraday_data:
+                    df_hourly = intraday_data['full_data']
+                    
+                    # Aggregate hourly data to daily bars
+                    df_hourly['Date_only'] = pd.to_datetime(df_hourly['Date']).dt.date
+                    
+                    df_daily = df_hourly.groupby('Date_only').agg({
+                        'Open': 'first',
+                        'High': 'max',
+                        'Low': 'min',
+                        'Close': 'last',
+                        'Volume': 'sum'
+                    }).reset_index()
+                    
+                    # Rename and format
+                    df_daily['Date'] = pd.to_datetime(df_daily['Date_only'])
+                    df_daily = df_daily.drop('Date_only', axis=1)
+                    df_daily = df_daily.sort_values('Date').reset_index(drop=True)
+                    
+                    # Keep last 60 bars
+                    if len(df_daily) > 60:
+                        df_daily = df_daily.tail(60).reset_index(drop=True)
+                    
+                    # Cache the data
+                    cache_key = f"daily_ohlcv_{symbol}_{today}.json"
+                    cache_path = os.path.join(self.cache_dir, cache_key)
+                    
+                    # Convert DataFrame to dict for JSON serialization
+                    # Convert timestamps to strings for JSON compatibility
+                    df_daily_json = df_daily.copy()
+                    df_daily_json['Date'] = df_daily_json['Date'].dt.strftime('%Y-%m-%d')
+                    
+                    cache_data = {
+                        'symbol': symbol,
+                        'interval': '1D',
+                        'bars': len(df_daily),
+                        'cached_at': et_now.isoformat(),
+                        'trading_day': today,
+                        'data': df_daily_json.to_dict('records'),
+                        'latest_close': float(df_daily.iloc[-1]['Close']) if len(df_daily) > 0 else None
+                    }
+                    
+                    with open(cache_path, 'w') as f:
+                        json.dump(cache_data, f, indent=2)
+                    
+                    cached_count += 1
+                    latest_close = cache_data['latest_close']
+                    close_str = f"{latest_close:.2f}" if latest_close else "N/A"
+                    print(f"   ✅ {symbol}: {len(df_daily)} daily bars cached, Latest Close={close_str}")
+                else:
+                    failed_symbols.append(symbol)
+                    print(f"   ⚠️  {symbol}: No data returned")
+                    
+            except Exception as e:
+                failed_symbols.append(symbol)
+                print(f"   ❌ {symbol}: {e}")
+        
+        print(f"\n{'='*80}")
+        print(f"✅ DAILY OHLCV CACHE COMPLETE")
+        print(f"   Cached: {cached_count}/{len(all_symbols)} symbols")
+        if failed_symbols:
+            print(f"   Failed: {', '.join(failed_symbols)}")
+        print(f"{'='*80}\n")
+        
+        return cached_count > 0
+
     def _read_cached_daily_indicators(self, symbol: str) -> Optional[Dict]:
         """
         Read cached daily indicators for a symbol
@@ -429,8 +631,14 @@ class EnhancedPredictiveScanner:
         elif status == "FAILED":
             msg += "❌ <b>PATTERN FAILED (CLOSED)</b>\n\n"
         
-        # Pattern observation
-        msg += f"<b>Pattern Observed:</b> {self.telegram.escape(pattern.get('pattern', 'N/A'))}\n"
+        # Pattern observation - SANITIZE the pattern name
+        pattern_name = pattern.get('pattern', 'N/A')
+        # Remove forbidden words from pattern name
+        pattern_name = pattern_name.replace('target', 'projected')
+        pattern_name = pattern_name.replace('Target', 'Projected')
+        pattern_name = pattern_name.replace('TARGET', 'PROJECTED')
+        
+        msg += f"<b>Pattern Observed:</b> {self.telegram.escape(pattern_name)}\n"
         msg += f"<b>Bias:</b> {self.telegram.escape(pattern.get('bias', 'N/A'))}\n"
         msg += f"<b>Price:</b> ${stock_ctx['price']:.2f}\n\n"
         
@@ -461,7 +669,31 @@ class EnhancedPredictiveScanner:
         if index_ctx['near_levels']:
             level = index_ctx['near_levels'][0]
             msg += f"• Near {level['name']}: ${level['value']:.2f} ({level['label']} zone)\n"
-        
+
+        msg += "\n"
+
+        # Add technical observations (MAS-compliant - no directives)
+        msg += "<b>Technical Observations:</b>\n"
+
+        # For bullish patterns
+        if pattern.get('bias') == 'BULLISH':
+            if stock_ctx.get('near_levels'):
+                level = stock_ctx['near_levels'][0]
+                msg += f"• Potential resistance zone observed: ${level['value']:.2f}\n"
+            
+            # Observed price levels (NOT "targets" or "stops")
+            if index_ctx.get('sma50'):
+                msg += f"• Notable level above: ${index_ctx['sma50']:.2f} (SMA50)\n"
+
+        # For bearish patterns
+        elif pattern.get('bias') == 'BEARISH':
+            if stock_ctx.get('near_levels'):
+                level = stock_ctx['near_levels'][0]
+                msg += f"• Potential support zone observed: ${level['value']:.2f}\n"
+            
+            if index_ctx.get('sma50'):
+                msg += f"• Notable level below: ${index_ctx['sma50']:.2f} (SMA50)\n"
+
         msg += "\n"
         msg += "─" * 40 + "\n"
         msg += f"<i>{DISCLAIMER}</i>"
@@ -581,29 +813,70 @@ class EnhancedPredictiveScanner:
                 # ================================================================
                 # PATTERN DETECTION - CHART PATTERNS (DAILY timeframe)
                 # ================================================================
-                # For Daily chart patterns, we need daily data
-                # Try to get daily data from Alpha Vantage
+                # For Daily chart patterns, use cached daily OHLCV data
                 try:
-                    daily_stock_data = self.av_client.fetch_intraday(symbol, interval='daily')
-                    if daily_stock_data and 'full_data' in daily_stock_data:
-                        df_daily = daily_stock_data['full_data']
+                    # Load from cache (pre-cached at startup)
+                    et_now = MarketScheduler.get_et_now()
+                    today = et_now.strftime("%Y-%m-%d")
+                    cache_key = f"daily_ohlcv_{symbol}_{today}.json"
+                    cache_path = os.path.join(self.cache_dir, cache_key)
+                    
+                    df_daily = None
+                    
+                    if os.path.exists(cache_path):
+                        # Load from cache
+                        with open(cache_path, 'r') as f:
+                            cache_data = json.load(f)
                         
-                        if len(df_daily) >= 60:
-                            print(f"   📅 {symbol}: Checking DAILY chart patterns...")
+                        # Convert back to DataFrame
+                        df_daily = pd.DataFrame(cache_data['data'])
+                        # Convert date strings back to datetime
+                        if 'Date' in df_daily.columns:
+                            df_daily['Date'] = pd.to_datetime(df_daily['Date'])
+                        print(f"   📅 {symbol}: Using cached daily data ({len(df_daily)} bars)")
+                    else:
+                        # Fallback: aggregate from 60min if cache not available
+                        print(f"   ⚠️  {symbol}: Daily cache not found, aggregating from 60min...")
+                        daily_stock_data = self.av_client.fetch_intraday(symbol, interval='60min')
+                        
+                        if daily_stock_data and 'full_data' in daily_stock_data:
+                            df_hourly = daily_stock_data['full_data']
                             
-                            # Detect chart patterns on Daily timeframe
-                            chart_patterns_daily = self.chart_detector.detect_all_patterns(df_daily, timeframe='Daily')
+                            # Aggregate hourly data to daily bars
+                            df_hourly['Date_only'] = pd.to_datetime(df_hourly['Date']).dt.date
                             
-                            # Only include recent patterns
-                            for chart_pattern in chart_patterns_daily:
-                                pattern_date = chart_pattern['date']
-                                if pattern_date >= df_daily.iloc[-5]['Date']:
-                                    chart_pattern['pattern_type'] = 'CHART'
-                                    chart_pattern['timeframe'] = 'Daily'
-                                    patterns_found.append(chart_pattern)
-                                    print(f"      ✅ Found: {chart_pattern['pattern']} (Daily)")
+                            df_daily = df_hourly.groupby('Date_only').agg({
+                                'Open': 'first',
+                                'High': 'max',
+                                'Low': 'min',
+                                'Close': 'last',
+                                'Volume': 'sum'
+                            }).reset_index()
+                            
+                            df_daily['Date'] = pd.to_datetime(df_daily['Date_only'])
+                            df_daily = df_daily.drop('Date_only', axis=1)
+                            df_daily = df_daily.sort_values('Date').reset_index(drop=True)
+                    
+                    # Detect patterns if we have sufficient data
+                    if df_daily is not None and len(df_daily) >= 60:
+                        print(f"   📊 {symbol}: Checking DAILY chart patterns...")
+                        
+                        # Detect chart patterns on Daily timeframe
+                        chart_patterns_daily = self.chart_detector.detect_all_patterns(df_daily, timeframe='Daily')
+                        
+                        # Only include recent patterns
+                        for chart_pattern in chart_patterns_daily:
+                            pattern_date = chart_pattern['date']
+                            if pattern_date >= df_daily.iloc[-5]['Date']:
+                                chart_pattern['pattern_type'] = 'CHART'
+                                chart_pattern['timeframe'] = 'Daily'
+                                patterns_found.append(chart_pattern)
+                                print(f"      ✅ Found: {chart_pattern['pattern']} (Daily)")
+                    elif df_daily is not None:
+                        print(f"   ⚠️  {symbol}: Insufficient daily data ({len(df_daily)} bars, need 60+)")
+                        
                 except Exception as e:
-                    print(f"      ⚠️  Could not fetch daily data: {e}")
+                    print(f"   ❌ {symbol}: Error in daily pattern detection: {e}")
                 
                 if not patterns_found:
                     continue
@@ -903,7 +1176,7 @@ class EnhancedPredictiveScanner:
                 msg += f"<b>Measured Move:</b> {pattern['measured_move_pct']:.1f}%\n"
             
             if 'target_price' in pattern:
-                msg += f"<b>Pattern Target:</b> ${pattern['target_price']:.2f}\n"
+                msg += f"<b>Projected Completion Level:</b> ${pattern['target_price']:.2f}\n"
             
             # Additional chart pattern details
             if 'breakout_level' in pattern:
@@ -1114,11 +1387,15 @@ class EnhancedPredictiveScanner:
                     if is_market_open_window:
                         print(f"\n🕘 MARKET OPEN (09:30 ET) - Starting pre-cache...")
                         self.precache_daily_indicators()
+                        self.precache_historical_data()
+                        self.precache_daily_ohlcv_data()
                     else:
                         # Late start - pre-cache immediately
                         print(f"\n⚠️  Late start detected (after 09:30 ET)")
                         print(f"   Running pre-cache now...")
                         self.precache_daily_indicators()
+                        self.precache_historical_data()
+                        self.precache_daily_ohlcv_data()
                 
                 # Calculate next candle close
                 next_close = MarketScheduler.get_next_candle_close(interval_minutes)

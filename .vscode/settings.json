@@ -1,5 +1,5 @@
 {
-    "python.defaultInterpreterPath": "${env:USERPROFILE}\\conda-envs\\trading\\python.exe",
+    "python.defaultInterpreterPath": ".\\.venv\\Scripts\\python.exe",
     "python.terminal.activateEnvironment": true,
     "python.analysis.typeCheckingMode": "basic",
     "files.exclude": {

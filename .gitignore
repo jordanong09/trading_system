@@ -1,5 +1,5 @@
 # Storage directories
-storage/cache/
+cache/
 storage/output/
 
 # Keep input directory structure but ignore large files

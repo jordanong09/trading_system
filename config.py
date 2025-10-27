@@ -1,12 +1,18 @@
-# config_secure.py - SECURE CONFIGURATION
+# config.py - MVP 4.0 Configuration (Updated with P4.3-P5.2)
+"""
+Configuration for Swing Trader Alert Engine
+Includes new modules: Weekly Watchlist, EOD Updates, Telegram Threading, Message Formatting
+"""
+
 import os
 from pathlib import Path
+from typing import Optional
 
 # ============================================================================
 # SECURE API KEY LOADING FROM ENVIRONMENT VARIABLES
 # ============================================================================
 
-def get_env_variable(var_name: str, default: str = None) -> str:
+def get_env_variable(var_name: str, default: Optional[str] = None) -> Optional[str]:
     """
     Load environment variable securely
     
@@ -15,21 +21,19 @@ def get_env_variable(var_name: str, default: str = None) -> str:
         default: Default value for testing (optional)
     
     Returns:
-        Environment variable value
-        
-    Raises:
-        ValueError: If variable not set and no default provided
+        Environment variable value or None
     """
     value = os.getenv(var_name, default)
     
     if value is None or value == "" or value == "your_key_here":
-        raise ValueError(
-            f"❌ ERROR: {var_name} not set in environment!\n"
-            f"Set it with: setx {var_name} \"your_value\"\n"
-            f"Then restart terminal and VS Code."
-        )
+        if default is None:
+            raise ValueError(
+                f"❌ ERROR: {var_name} not set in environment!\n"
+                f"Set it with: export {var_name}='your_value'\n"
+                f"Then restart terminal."
+            )
     
-    return value
+    return value if value else default
 
 
 # ============================================================================
@@ -37,11 +41,15 @@ def get_env_variable(var_name: str, default: str = None) -> str:
 # ============================================================================
 
 try:
-    ALPHA_VANTAGE_API_KEY = get_env_variable('ALPHA_VANTAGE_API_KEY')
-    TELEGRAM_BOT_TOKEN = get_env_variable('TELEGRAM_BOT_TOKEN')
-    TELEGRAM_CHAT_ID = get_env_variable('TELEGRAM_CHAT_ID')
+    ALPHA_VANTAGE_API_KEY = get_env_variable('ALPHA_VANTAGE_API_KEY', 'demo')
+    TELEGRAM_BOT_TOKEN = get_env_variable('TELEGRAM_BOT_TOKEN', 'test_token')
+    TELEGRAM_CHAT_ID = get_env_variable('TELEGRAM_CHAT_ID', 'test_id')
     
-    print("✅ API keys loaded securely from environment variables")
+    if ALPHA_VANTAGE_API_KEY != 'demo':
+        print("✅ API keys loaded securely from environment variables")
+    else:
+        print("⚠️  WARNING: Using demo/test mode")
+        print("Set environment variables for production!\n")
     
 except ValueError as e:
     print(f"\n{e}")
@@ -55,70 +63,158 @@ except ValueError as e:
 
 
 # ============================================================================
-# PATHS (Windows-compatible)
+# PATHS (Cross-platform compatible)
 # ============================================================================
 
-WATCHLIST_FILE = "data\\watchlist.xlsx"
-OUTPUT_FILE = "output\\scan_results.xlsx"
-LOG_FILE = "logs\\scanner.log"
 CACHE_DIRECTORY = "cache"
-EXCEL_FILE = "data\\AAPL_60days.csv"
+OUTPUT_DIRECTORY = "output"
+LOG_DIRECTORY = "logs"
+DATA_DIRECTORY = "data"
+
+# Ensure directories exist
+for directory in [CACHE_DIRECTORY, OUTPUT_DIRECTORY, LOG_DIRECTORY, DATA_DIRECTORY]:
+    Path(directory).mkdir(parents=True, exist_ok=True)
+
 
 # ============================================================================
-# SCANNING PARAMETERS (OPTIMIZED)
+# STOCK UNIVERSE CONFIGURATION
+# ============================================================================
+
+STOCK_UNIVERSE = {
+    'initial_count': 50,          # Start with 50 stocks for MVP
+    'min_price': 10.0,            # Minimum stock price
+    'min_adv': 50_000_000,        # Minimum average daily volume ($50M)
+    'exchanges': ['NYSE', 'NASDAQ']
+}
+
+
+# ============================================================================
+# ZONE CONFIGURATION
+# ============================================================================
+
+ZONE_CONFIG = {
+    'atr_multiplier': 0.30,       # ±0.30×ATR for zone bands
+    'max_distance_atr': 0.35,     # Max distance for trigger eligibility
+    'ema20_slope_strong': 0.10,   # |slope| >= 0.10 → strong
+    'ema20_slope_moderate': 0.05, # 0.05-0.10 → moderate
+    'recent_touch_decay': 0.98,   # 0.98^days decay factor
+    'stack_bonus': 0.5            # Points for aligned MAs
+}
+
+
+# ============================================================================
+# COMPONENT WEIGHTS (for Base Strength calculation)
+# ============================================================================
+
+COMPONENT_WEIGHTS = {
+    'ema20': 1.0,
+    'sma50': 0.8,
+    'sma100': 0.6,
+    'sma200': 1.2,
+    "round_number": 0.6,
+    'swing_high': 1.0,
+    'swing_low': 1.0,
+    'gap_edge': 0.8,
+    'hvn': 0.5,
+    'lvn': 0.3
+}
+
+
+# ============================================================================
+# CONFLUENCE THRESHOLDS
+# ============================================================================
+
+CONFLUENCE_THRESHOLDS = {
+    'minimum_score': 6.0,         # Minimum total score to generate signal
+    'high_quality': 8.0,          # Score >= 8.0 → High quality
+    'medium_quality': 6.5,        # 6.5-7.9 → Medium quality
+    'base_weight': 0.6,           # Weight for base strength (out of 10)
+    'index_weight': 0.2,          # Weight for index alignment
+    'trend_weight': 0.2           # Weight for trend alignment
+}
+
+
+# ============================================================================
+# RELATIVE VOLUME (RV) REQUIREMENTS
+# ============================================================================
+
+RV_REQUIREMENTS = {
+    'minimum': 1.2,               # Minimum RV to consider pattern
+    'strong': 1.8,                # RV >= 1.8 → Strong pattern
+    'lookback_periods': 20        # Periods for average volume calculation
+}
+
+
+# ============================================================================
+# P4.3: WEEKLY WATCHLIST CONFIGURATION
+# ============================================================================
+
+WEEKLY_WATCHLIST = {
+    'enabled': True,                          # Enable watchlist generation
+    'min_confluence': 7.0,                    # Minimum zone strength for watchlist
+    'max_stocks': 30,                         # Max stocks in watchlist
+    'max_distance_atr': 1.0,                  # Max distance from zone for watchlist
+    'watchlist_file': 'weekly_watchlist.json', # Cache file name
+    'scan_day': 'sun',                        # Day to generate (Sunday)
+    'scan_hour': 18,                          # Hour to generate (18:00 ET)
+    'scan_minute': 0
+}
+
+
+# ============================================================================
+# P4.4: EOD UPDATE CONFIGURATION
+# ============================================================================
+
+EOD_UPDATE = {
+    'enabled': False,                         # Optional - set True to enable
+    'shift_threshold': 0.5,                   # Alert if zone shifts >0.5×ATR
+    'update_days': 'mon-thu',                 # Days to run update
+    'update_hour': 17,                        # Hour to run (17:00 ET)
+    'update_minute': 0,
+    'update_log_file': 'eod_updates.json'
+}
+
+
+# ============================================================================
+# P5.1: TELEGRAM THREADING CONFIGURATION
+# ============================================================================
+
+TELEGRAM_THREADING = {
+    'enabled': False,                         # Requires Telegram Supergroup with Topics
+    'topic_cache_file': 'telegram_topics.json',
+    'create_symbol_topics': True,             # Create topic per symbol
+    'create_general_topic': True,             # Create general topic
+    'create_watchlist_topic': True            # Create watchlist topic
+}
+
+
+# ============================================================================
+# P5.2: MESSAGE FORMATTING CONFIGURATION
+# ============================================================================
+
+MESSAGE_FORMATTING = {
+    'use_markdown': True,                     # Use Markdown formatting
+    'include_buttons': True,                  # Inline buttons (View Chart, etc.)
+    'compact_mode': False,                    # Use compact formatting
+    'include_chart_link': True,               # Include TradingView link
+    'include_levels': True,                   # Include entry/target/stop levels
+    'include_confluence_breakdown': True      # Include detailed confluence
+}
+
+
+# ============================================================================
+# SCANNING PARAMETERS
 # ============================================================================
 
 SCAN_INTERVAL_MINUTES = 60
 MAX_STOCKS_PER_SCAN = 200
-SYMBOL_COLUMN = "Symbol"
-
-# T-5 Predictive Scanning
-PREDICTIVE_LEAD_TIME_MINUTES = 5
-ENABLE_CONFIRMATION_SCAN = True
-
-# API Configuration
 API_RATE_LIMIT_PER_MIN = 150
 
-# ============================================================================
-# CACHE CONFIGURATION
-# ============================================================================
-
+# Cache Configuration
 ENABLE_DAILY_MA_CACHE = True
 CACHE_EXPIRY_HOURS = 24
 ENABLE_HISTORICAL_CACHE = True
-MAX_CACHED_CANDLES = 60
 
-# ============================================================================
-# PATTERN DETECTION PARAMETERS
-# ============================================================================
-
-# Support/Resistance
-SR_LOOKBACK_CANDLES = 30
-SR_CLUSTER_THRESHOLD = 0.005
-MAX_SR_LEVELS = 3
-
-# Breakout Detection
-BREAKOUT_LOOKBACK = 20
-BREAKOUT_DISTANCE_THRESHOLD = 0.01
-BREAKOUT_VOLUME_MULTIPLIER = 1.2
-
-# Candlestick Patterns
-VOLUME_SURGE_MULTIPLIER = 1.5
-HAMMER_WICK_RATIO = 2.0
-SHOOTING_STAR_WICK_RATIO = 2.0
-
-# Moving Average Configurations
-MA_SR_PROXIMITY_PCT = 2.0
-TREND_ALIGNMENT_MIN = 3
-MIN_CONFLUENCE_FOR_ALERT = 3
-
-# ============================================================================
-# CONFLUENCE SCORING (7 POINTS)
-# ============================================================================
-
-MIN_CONFLUENCE_SCORE = 4
-MIN_CONFLUENCE_PERCENTAGE = 57
-SEND_STRONG_SIGNALS_ONLY = False
 
 # ============================================================================
 # MARKET HOURS (US Eastern Time)
@@ -133,21 +229,15 @@ EXTENDED_HOURS_START = 4
 EXTENDED_HOURS_END = 20
 USE_EXTENDED_HOURS = False
 
+
 # ============================================================================
 # ALERT CONFIGURATION
 # ============================================================================
 
-ENABLE_PREDICTIVE_ALERTS = True
-PREDICTIVE_ALERT_PREFIX = "⚠️ PATTERN FORMING"
-
-ENABLE_CONFIRMATION_ALERTS = True
-CONFIRMATION_ALERT_PREFIX = "✅ PATTERN CONFIRMED"
-FAILED_ALERT_PREFIX = "❌ PATTERN FAILED"
-
+ENABLE_TELEGRAM_ALERTS = True
 INCLUDE_CHART_LINKS = True
 INCLUDE_TRADE_PLAN = True
-INCLUDE_SR_LEVELS = True
-INCLUDE_BREAKOUT_INFO = True
+
 
 # ============================================================================
 # LOGGING & OUTPUT
@@ -155,32 +245,7 @@ INCLUDE_BREAKOUT_INFO = True
 
 SAVE_SCAN_RESULTS = True
 ENABLE_DETAILED_LOGGING = True
-LOG_API_CALLS = True
-
-TRACK_SCAN_METRICS = True
-TRACK_CONFIRMATION_RATE = True
-TRACK_WIN_RATE = False
-
-# ============================================================================
-# BACKTESTING
-# ============================================================================
-
-SHEET_NAME = "Sheet1"
-SYMBOL = "AAPL"
-
-# ============================================================================
-# ADVANCED SETTINGS
-# ============================================================================
-
-MAX_RETRIES_PER_STOCK = 2
-RETRY_DELAY_SECONDS = 5
-
-ENABLE_PARALLEL_SCANNING = False
-MAX_WORKER_THREADS = 4
-
-VALIDATE_OHLC_DATA = True
-MIN_VOLUME_THRESHOLD = 100000
-MAX_PRICE_THRESHOLD = 10000
+LOG_API_CALLS = False
 
 
 # ============================================================================
@@ -202,10 +267,24 @@ def validate_configuration() -> bool:
         issues.append("⚠️  Telegram chat ID not set")
     
     # Check directories exist
-    for directory in [CACHE_DIRECTORY, "data", "output", "logs"]:
+    for directory in [CACHE_DIRECTORY, OUTPUT_DIRECTORY, LOG_DIRECTORY, DATA_DIRECTORY]:
         if not Path(directory).exists():
             Path(directory).mkdir(parents=True, exist_ok=True)
             print(f"📁 Created directory: {directory}")
+    
+    # Validate weekly watchlist config
+    if WEEKLY_WATCHLIST['enabled']:
+        if WEEKLY_WATCHLIST['min_confluence'] < 5.0:
+            issues.append("⚠️  Weekly watchlist min_confluence should be >= 5.0")
+    
+    # Validate EOD config
+    if EOD_UPDATE['enabled']:
+        if EOD_UPDATE['shift_threshold'] <= 0:
+            issues.append("⚠️  EOD shift_threshold must be > 0")
+    
+    # Validate Telegram threading config
+    if TELEGRAM_THREADING['enabled']:
+        print("ℹ️  Telegram threading enabled - requires Supergroup with Topics")
     
     # Report issues
     if issues:

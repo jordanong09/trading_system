@@ -1,0 +1,13 @@
+# requirements.txt - MVP 4.0 Python Dependencies
+
+# Data handling
+pandas>=2.0.0
+numpy>=1.24.0
+
+# API requests
+requests>=2.31.0
+
+# Configuration (optional, for .env files)
+python-dotenv>=1.0.0
+
+APScheduler>=3.10

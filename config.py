@@ -125,12 +125,13 @@ COMPONENT_WEIGHTS = {
 # ============================================================================
 
 CONFLUENCE_THRESHOLDS = {
-    'minimum_score': 6.0,         # Minimum total score to generate signal
-    'high_quality': 8.0,          # Score >= 8.0 → High quality
-    'medium_quality': 6.5,        # 6.5-7.9 → Medium quality
-    'base_weight': 0.6,           # Weight for base strength (out of 10)
-    'index_weight': 0.2,          # Weight for index alignment
-    'trend_weight': 0.2           # Weight for trend alignment
+    # Thresholds for watchlist stocks (already tracked)
+    'watchlist_high': 7.0,        # High quality from watchlist: ≥7/10
+    'watchlist_medium': 5.0,      # Medium quality from watchlist: ≥5/10
+    
+    # Thresholds for new stocks (not on watchlist)
+    'new_high': 8.0,              # High quality for new: ≥8/10
+    'new_medium': 7.0             # Medium quality for new: ≥7/10
 }
 
 
@@ -140,7 +141,8 @@ CONFLUENCE_THRESHOLDS = {
 
 RV_REQUIREMENTS = {
     'minimum': 1.2,               # Minimum RV to consider pattern
-    'strong': 1.8,                # RV >= 1.8 → Strong pattern
+    'high': 1.5,                  # RV >= 1.5 → High quality signal
+    'medium': 1.2,                # RV >= 1.2 → Medium quality signal
     'lookback_periods': 20        # Periods for average volume calculation
 }
 

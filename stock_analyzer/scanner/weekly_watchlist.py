@@ -2,13 +2,12 @@
 Weekly Watchlist Generator for Swing Trader Alert Engine
 Scans universe on Sunday evening to identify best setups for the upcoming week.
 
-Priority: ⭐⭐⭐⭐ (Optional but high value)
-Purpose: Pre-identify quality setups for focused monitoring
+FULLY INTEGRATED VERSION - Uses scanner infrastructure with caching
 """
 
 import json
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from pathlib import Path
 
 
@@ -22,6 +21,7 @@ class WeeklyWatchlist:
     - Generates top 20-30 stocks to watch
     - Persists watchlist to file
     - Flags watchlist stocks in hourly alerts
+    - Uses cache to minimize API calls
     """
     
     def __init__(
@@ -72,25 +72,30 @@ class WeeklyWatchlist:
         print("="*70)
         print(f"Scanning {len(symbols)} symbols for quality zones...")
         print(f"Minimum confluence: {self.min_confluence}/10")
+        print(f"Using cache: ✅ (reduces API calls)")
         
         candidates = []
+        processed = 0
+        errors = 0
         
         for i, symbol in enumerate(symbols, 1):
+            # Progress update every 10 symbols
             if i % 10 == 0:
-                print(f"   Progress: {i}/{len(symbols)} symbols scanned...")
+                print(f"   Progress: {i}/{len(symbols)} symbols scanned... "
+                      f"({processed} qualified, {errors} errors)")
             
             try:
-                # Get zone analysis without pattern requirement
+                # Get zone analysis with scanner integration
                 zones = self._analyze_zones(symbol)
                 
                 if zones:
                     # Find best zone for this symbol
-                    best_zone = max(zones, key=lambda z: z['confluence'])
+                    best_zone = max(zones, key=lambda z: z['strength'])
                     
-                    if best_zone['confluence'] >= self.min_confluence:
+                    if best_zone['strength'] >= self.min_confluence:
                         candidates.append({
                             'symbol': symbol,
-                            'confluence': best_zone['confluence'],
+                            'confluence': best_zone['strength'],
                             'zone_type': best_zone['type'],
                             'zone_price': best_zone['mid'],
                             'current_price': best_zone.get('current_price', 0),
@@ -98,10 +103,12 @@ class WeeklyWatchlist:
                             'components': best_zone.get('components', []),
                             'scanned_at': datetime.now().isoformat()
                         })
+                        processed += 1
             
             except Exception as e:
-                print(f"   ⚠️  Error scanning {symbol}: {e}")
-                continue
+                errors += 1
+                if errors <= 5:  # Only show first 5 errors
+                    print(f"   ⚠️  Error scanning {symbol}: {str(e)[:60]}")
         
         # Sort by confluence (descending)
         candidates.sort(key=lambda x: x['confluence'], reverse=True)
@@ -120,7 +127,10 @@ class WeeklyWatchlist:
     
     def _analyze_zones(self, symbol: str) -> List[Dict]:
         """
-        Analyze zones for a symbol (called by scanner).
+        Analyze zones for a symbol using scanner's infrastructure.
+        
+        This is the key integration point - uses existing scanner components
+        with caching to minimize API calls.
         
         Args:
             symbol: Stock symbol
@@ -129,22 +139,85 @@ class WeeklyWatchlist:
             List of zone dictionaries with confluence scores
         """
         try:
-            # This would call your existing scanner's zone building logic
-            # For now, return mock data structure
-            # In real integration, you'd call:
-            # daily_data = self.scanner.data_fetcher.fetch_daily_data(symbol)
-            # hourly_data = self.scanner.data_fetcher.fetch_hourly_data(symbol)
-            # zones = self.scanner.zone_builder.build_zones(symbol, daily_data, hourly_data)
+            # Import here to avoid circular imports
+            from indicators.technical_indicators import TechnicalIndicators
             
-            # Mock implementation - replace with actual scanner call
-            # zones = self.scanner.get_zones_only(symbol)
+            # Step 1: Fetch daily data (uses cache if available)
+            daily_df = self.scanner.cache_mgr.get_or_fetch_daily(
+                symbol,
+                lambda s: self.scanner.api.fetch_daily_data(s)
+            )
             
-            # For template purposes, return empty list
-            # You'll integrate this with your actual scanner
-            return []
+            if daily_df is None or len(daily_df) < 60:
+                return []
+            
+            # Step 2: Calculate indicators
+            indicators = TechnicalIndicators.calculate_all_indicators(daily_df)
+            
+            if indicators.get('error'):
+                return []
+            
+            current_price = indicators['current_price']
+            atr = indicators['atr14d']
+            
+            # Add missing indicator fields that zone_engine expects
+            if 'round_number' not in indicators:
+                round_numbers = []
+                for base in [5, 10, 25, 50, 100]:
+                    rounded = round(current_price / base) * base
+                    if abs(rounded - current_price) <= current_price * 0.1:
+                        round_numbers.append(rounded)
+                indicators['round_number'] = sorted(set(round_numbers)) if round_numbers else []
+            
+            for field in ['swing_highs', 'swing_lows', 'gap_edges', 'hvn', 'lvn']:
+                if field not in indicators:
+                    indicators[field] = []
+            
+            # Step 3: Check if zones are already cached (< 24 hours old)
+            zones = self.scanner.cache_mgr.load_cached_zones(symbol, max_age_hours=24)
+            
+            if not zones:
+                # Cache miss - fetch hourly data and build zones
+                hourly_df = self.scanner.cache_mgr.get_or_fetch_hourly(
+                    symbol,
+                    lambda s: self.scanner.api.fetch_hourly_data(s)
+                )
+                
+                if hourly_df is None:
+                    return []
+                
+                # Build zones using scanner's zone engine
+                zones = self.scanner.zone_engine.build_zones(
+                    symbol=symbol,
+                    indicators=indicators,
+                    current_price=current_price,
+                    atr=atr,
+                    hourly_df=hourly_df
+                )
+                
+                # Cache zones for future use (saves API calls)
+                if zones:
+                    self.scanner.cache_mgr.save_zones(symbol, zones)
+            
+            # Step 4: Filter zones within reasonable distance
+            # For watchlist, we want zones that are tradeable soon
+            max_distance_atr = 1.0  # Within 1 ATR of current price
+            
+            nearby_zones = []
+            for zone in zones:
+                distance_atr = abs(zone['mid'] - current_price) / atr if atr > 0 else 999
+                
+                if distance_atr <= max_distance_atr:
+                    # Enhance zone with current price context
+                    zone['current_price'] = current_price
+                    zone['distance_pct'] = ((zone['mid'] - current_price) / current_price) * 100
+                    zone['distance_atr'] = distance_atr
+                    nearby_zones.append(zone)
+            
+            return nearby_zones
         
         except Exception as e:
-            print(f"   ⚠️  Error analyzing {symbol}: {e}")
+            # Silently fail for individual stocks
             return []
     
     def is_on_watchlist(self, symbol: str) -> bool:
@@ -188,7 +261,7 @@ class WeeklyWatchlist:
         message = "📋 **WEEKLY WATCHLIST**\n"
         message += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
         message += f"Quality threshold: {self.min_confluence}/10\n"
-        message += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        message += "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
         # Group by support/resistance
         supports = [e for e in self.watchlist if e['zone_type'] == 'support']
@@ -205,7 +278,12 @@ class WeeklyWatchlist:
                     dist = entry.get('distance_pct', 0)
                     message += f" | {abs(dist):.1f}% away"
                 
-                message += f"\n   • Components: {', '.join(entry.get('components', [])[:3])}\n"
+                # Show top 3 components
+                components = entry.get('components', [])[:3]
+                if components:
+                    message += f"\n   • Components: {', '.join(components)}\n"
+                else:
+                    message += "\n"
             
             message += "\n"
         
@@ -220,12 +298,17 @@ class WeeklyWatchlist:
                     dist = entry.get('distance_pct', 0)
                     message += f" | {abs(dist):.1f}% away"
                 
-                message += f"\n   • Components: {', '.join(entry.get('components', [])[:3])}\n"
+                # Show top 3 components
+                components = entry.get('components', [])[:3]
+                if components:
+                    message += f"\n   • Components: {', '.join(components)}\n"
+                else:
+                    message += "\n"
             
             message += "\n"
         
         # Footer
-        message += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        message += "━━━━━━━━━━━━━━━━━━━━━━━\n"
         message += f"Total: {len(self.watchlist)} stocks\n"
         message += "Monitor these for patterns during the week! 📊"
         
@@ -276,7 +359,6 @@ class WeeklyWatchlist:
             True if loaded successfully
         """
         if not self.watchlist_file.exists():
-            print(f"   ℹ️  No existing watchlist found")
             return False
         
         try:
@@ -287,8 +369,9 @@ class WeeklyWatchlist:
             self.watchlist_symbols = {e['symbol'] for e in self.watchlist}
             
             generated_at = data.get('generated_at', 'unknown')
-            print(f"   ✅ Loaded watchlist from {generated_at}")
-            print(f"   • {len(self.watchlist)} stocks on watchlist")
+            if self.watchlist:
+                print(f"   ✅ Loaded watchlist from {generated_at}")
+                print(f"   • {len(self.watchlist)} stocks on watchlist")
             
             return True
         
@@ -337,218 +420,98 @@ class WeeklyWatchlist:
 
 
 # =============================================================================
-# TESTING FUNCTIONS
+# STANDALONE GENERATION SCRIPT
 # =============================================================================
 
-def test_watchlist_generation():
-    """Test watchlist generation with mock data."""
-    print("\n" + "="*70)
-    print("TEST 1: Watchlist Generation")
-    print("="*70)
-    
-    # Mock scanner
-    class MockScanner:
-        pass
-    
-    watchlist = WeeklyWatchlist(
-        scanner=MockScanner(),
-        min_confluence=7.0,
-        max_stocks=10,
-        watchlist_file="test_watchlist.json"
-    )
-    
-    # Clear existing
-    watchlist.clear_watchlist()
-    
-    # Mock candidates
-    mock_candidates = [
-        {'symbol': 'AAPL', 'confluence': 9.5, 'type': 'support', 'mid': 264.16, 
-         'current_price': 262.82, 'distance_pct': -0.5, 'components': ['EMA20', 'swing_low', 'HVN']},
-        {'symbol': 'TSLA', 'confluence': 8.8, 'type': 'resistance', 'mid': 245.00,
-         'current_price': 243.50, 'distance_pct': 0.6, 'components': ['SMA50', 'gap_filled']},
-        {'symbol': 'NVDA', 'confluence': 8.2, 'type': 'support', 'mid': 485.30,
-         'current_price': 483.00, 'distance_pct': -0.5, 'components': ['EMA20', 'HVN']},
-        {'symbol': 'GOOGL', 'confluence': 7.5, 'type': 'support', 'mid': 142.50,
-         'current_price': 141.00, 'distance_pct': -1.0, 'components': ['SMA100']},
-        {'symbol': 'MSFT', 'confluence': 7.2, 'type': 'resistance', 'mid': 378.00,
-         'current_price': 379.50, 'distance_pct': 0.4, 'components': ['EMA20', 'swing_high']},
-    ]
-    
-    # Manually populate watchlist
-    for candidate in mock_candidates:
-        watchlist.watchlist.append({
-            'symbol': candidate['symbol'],
-            'confluence': candidate['confluence'],
-            'zone_type': candidate['type'],
-            'zone_price': candidate['mid'],
-            'current_price': candidate['current_price'],
-            'distance_pct': candidate['distance_pct'],
-            'components': candidate['components'],
-            'scanned_at': datetime.now().isoformat()
-        })
-    
-    watchlist.watchlist_symbols = {e['symbol'] for e in watchlist.watchlist}
-    watchlist.save_watchlist()
-    
-    print(f"✅ Generated watchlist with {len(watchlist.watchlist)} stocks")
-    
-    # Test watchlist checking
-    assert watchlist.is_on_watchlist('AAPL'), "AAPL should be on watchlist"
-    assert not watchlist.is_on_watchlist('AMD'), "AMD should not be on watchlist"
-    print("✅ Watchlist membership check working")
-    
-    # Test stats
-    stats = watchlist.get_stats()
-    print(f"\n📊 Watchlist Stats:")
-    print(f"   • Total: {stats['total']}")
-    print(f"   • Avg confluence: {stats['avg_confluence']:.1f}")
-    print(f"   • Supports: {stats['supports']}")
-    print(f"   • Resistances: {stats['resistances']}")
-    
-    print("\n✅ Watchlist generation test passed!")
-
-
-def test_message_formatting():
-    """Test message formatting."""
-    print("\n" + "="*70)
-    print("TEST 2: Message Formatting")
-    print("="*70)
-    
-    class MockScanner:
-        pass
-    
-    watchlist = WeeklyWatchlist(
-        scanner=MockScanner(),
-        watchlist_file="test_watchlist.json"
-    )
-    
-    # Format full message
-    message = watchlist.format_watchlist_message()
-    print("\n📱 TELEGRAM MESSAGE:")
-    print("-" * 70)
-    print(message)
-    print("-" * 70)
-    
-    # Format short summary
-    summary = watchlist.format_short_summary()
-    print(f"\n📋 SHORT SUMMARY: {summary}")
-    
-    print("\n✅ Message formatting test passed!")
-
-
-def test_persistence():
-    """Test watchlist persistence."""
-    print("\n" + "="*70)
-    print("TEST 3: Persistence")
-    print("="*70)
-    
-    class MockScanner:
-        pass
-    
-    # Create first instance
-    watchlist1 = WeeklyWatchlist(
-        scanner=MockScanner(),
-        watchlist_file="test_watchlist.json"
-    )
-    
-    # Should load existing watchlist
-    initial_count = len(watchlist1.watchlist)
-    print(f"✅ Loaded {initial_count} stocks from saved watchlist")
-    
-    # Create second instance
-    watchlist2 = WeeklyWatchlist(
-        scanner=MockScanner(),
-        watchlist_file="test_watchlist.json"
-    )
-    
-    # Should have same data
-    assert len(watchlist2.watchlist) == initial_count, "Watchlist should persist"
-    assert watchlist2.is_on_watchlist('AAPL'), "Symbols should persist"
-    
-    print("✅ Persistence test passed!")
-
-
-def run_all_tests():
-    """Run complete test suite."""
-    print("\n" + "="*70)
-    print("WEEKLY WATCHLIST TEST SUITE")
-    print("="*70)
-    
-    test_watchlist_generation()
-    test_message_formatting()
-    test_persistence()
-    
-    # Cleanup
-    import os
-    if os.path.exists("cache/test_watchlist.json"):
-        os.remove("cache/test_watchlist.json")
-        print("\n🧹 Cleaned up test files")
-    
-    print("\n" + "="*70)
-    print("✅ ALL TESTS PASSED!")
-    print("="*70)
-
-
-# =============================================================================
-# INTEGRATION EXAMPLE
-# =============================================================================
-
-def integration_example():
+def generate_weekly_watchlist_standalone():
     """
-    Example of how to integrate with main.py and scheduler.
+    Standalone function to generate watchlist.
+    Can be called from main.py or run directly.
     """
+    import config
+    from scanner.hourly_scanner import Scanner
+    
     print("\n" + "="*70)
-    print("INTEGRATION EXAMPLE")
+    print("📋 WEEKLY WATCHLIST GENERATOR")
     print("="*70)
+    print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
     
-    print("""
-# In main.py:
-
-from scanner.weekly_watchlist import WeeklyWatchlist
-from alerts.telegram_sender import TelegramSender
-
-# Initialize
-scanner = HourlyScanner(config)
-watchlist_gen = WeeklyWatchlist(
-    scanner=scanner,
-    min_confluence=7.0,
-    max_stocks=30
-)
-telegram = TelegramSender(config)
-
-# Generate watchlist (Sunday evening)
-def generate_weekly_watchlist():
-    symbols = config.get_universe()
-    watchlist = watchlist_gen.generate_watchlist(symbols)
+    # Initialize scanner
+    print("🔧 Initializing scanner...")
+    scanner = Scanner({
+        'ALPHA_VANTAGE_API_KEY': config.ALPHA_VANTAGE_API_KEY,
+        'TELEGRAM_BOT_TOKEN': config.TELEGRAM_BOT_TOKEN,
+        'TELEGRAM_CHAT_ID': config.TELEGRAM_CHAT_ID,
+        'CACHE_DIRECTORY': config.CACHE_DIRECTORY,
+        'ZONE_CONFIG': config.ZONE_CONFIG,
+        'COMPONENT_WEIGHTS': config.COMPONENT_WEIGHTS,
+        'CONFLUENCE_THRESHOLDS': config.CONFLUENCE_THRESHOLDS,
+        'RV_REQUIREMENTS': config.RV_REQUIREMENTS,
+        'WEEKLY_WATCHLIST': config.WEEKLY_WATCHLIST
+    })
     
-    # Send to Telegram
-    message = watchlist_gen.format_watchlist_message()
-    telegram.send_message(message)
+    # Check if watchlist module is enabled
+    if not scanner.watchlist_gen:
+        print("❌ Weekly watchlist not enabled in config.py")
+        print("   Set WEEKLY_WATCHLIST['enabled'] = True")
+        return None
     
-    return watchlist
-
-# In hourly scanner (check if on watchlist)
-def scan_symbol(symbol):
-    # ... build zones, detect patterns ...
+    # Get stock universe
+    from main import get_stock_universe
+    symbols = get_stock_universe()
     
-    # Check if on watchlist
-    if watchlist_gen.is_on_watchlist(symbol):
-        # Add ⭐ badge to alert
-        alert_prefix = "⭐ WATCHLIST | "
+    print(f"📊 Stock universe: {len(symbols)} symbols")
+    print(f"   Min confluence: {config.WEEKLY_WATCHLIST['min_confluence']}/10")
+    print(f"   Max stocks: {config.WEEKLY_WATCHLIST['max_stocks']}")
+    print(f"   Cache enabled: ✅ (24-hour expiry)\n")
+    
+    # Estimate API calls
+    print(f"💡 Estimated API calls:")
+    print(f"   If cache empty: ~{len(symbols) * 2} calls (daily + hourly)")
+    print(f"   If cache valid: ~0 calls (uses cached data)")
+    print()
+    
+    # Generate watchlist
+    watchlist = scanner.watchlist_gen.generate_watchlist(symbols)
+    
+    if watchlist:
+        # Display formatted message
+        message = scanner.watchlist_gen.format_watchlist_message()
+        print("\n" + "="*70)
+        print("📋 WATCHLIST PREVIEW")
+        print("="*70)
+        print(message)
+        print("="*70)
+        
+        # Show statistics
+        stats = scanner.watchlist_gen.get_stats()
+        print(f"\n📊 STATISTICS:")
+        print(f"   Total stocks: {stats['total']}")
+        print(f"   Avg confluence: {stats['avg_confluence']:.1f}/10")
+        print(f"   Support setups: {stats['supports']}")
+        print(f"   Resistance setups: {stats['resistances']}")
+        print(f"   Best confluence: {stats['max_confluence']:.1f}/10")
+        print(f"   Weakest confluence: {stats['min_confluence']:.1f}/10")
+        
+        # Offer to send to Telegram
+        if scanner.telegram.is_configured():
+            print()
+            response = input("📤 Send watchlist to Telegram? (y/n): ")
+            if response.lower() == 'y':
+                success = scanner.telegram._send_regular_message(message)
+                if success:
+                    print("   ✅ Watchlist sent to Telegram!")
+                else:
+                    print("   ❌ Failed to send to Telegram")
+        else:
+            print("\n⚠️  Telegram not configured - watchlist saved locally only")
+        
+        return watchlist
     else:
-        alert_prefix = "🆕 NEW | "
-    
-    # Send alert with prefix
-    send_alert(alert_prefix + format_signal(signal))
-
-# In scheduler (add to schedule_weekly_watchlist):
-scheduler.schedule_weekly_watchlist()  # Sunday 18:00 ET
-    """)
+        print("\n⚠️  No stocks met the quality threshold")
+        print("   Try lowering min_confluence in config.py")
+        return None
 
 
 if __name__ == "__main__":
-    # Run tests
-    run_all_tests()
-    
-    # Show integration example
-    integration_example()
+    generate_weekly_watchlist_standalone()

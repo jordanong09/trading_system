@@ -1,17 +1,19 @@
 # modules/cache_manager.py - Data Cache Management
 """
-MVP 4.0 Cache Manager
+MVP 4.0 Cache Manager - OPTIMIZED
 - Manages historical data cache for stocks
+- Zone caching for EOD updates
 - Maintains 30+ days of 1H candles
 - 24-hour expiry for daily data
-- Merge new data with cached data
 """
 
 import pandas as pd
 import pickle
+import json
 import os
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List, Dict
+from pathlib import Path
 
 
 class CacheManager:
@@ -19,29 +21,28 @@ class CacheManager:
     Manages data caching for the system
     """
     
-    def __init__(self, cache_dir: str = "cache"):
+    def __init__(self, cache_dir: str = "storage/cache"):
         """
         Initialize cache manager
         
         Args:
-            cache_dir: Directory for cache files
+            cache_dir: Directory for cache files (default: storage/cache)
         """
-        self.cache_dir = cache_dir
+        self.cache_dir = Path(cache_dir)
+        self.zones_dir = self.cache_dir / "zones"
+        self.ohlcv_dir = self.cache_dir / "ohlcv"
+        self.indicators_dir = self.cache_dir / "indicators"
         self.max_candles = 200  # Keep 200 bars (enough for indicators)
-        os.makedirs(cache_dir, exist_ok=True)
+        
+        # Create all subdirectories
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.zones_dir.mkdir(parents=True, exist_ok=True)
+        self.ohlcv_dir.mkdir(parents=True, exist_ok=True)
+        self.indicators_dir.mkdir(parents=True, exist_ok=True)
     
     def get_cache_file(self, symbol: str, timeframe: str = 'daily') -> str:
-        """
-        Get cache file path for symbol and timeframe
-        
-        Args:
-            symbol: Stock symbol
-            timeframe: 'daily' or 'hourly'
-            
-        Returns:
-            Full path to cache file
-        """
-        return os.path.join(self.cache_dir, f"{symbol}_{timeframe}_data.pkl")
+        """Get cache file path for symbol and timeframe - stores in ohlcv subdirectory"""
+        return str(self.ohlcv_dir / f"{symbol}_{timeframe}_data.pkl")
     
     def load_cached_data(self, symbol: str, timeframe: str = 'daily', 
                         max_age_hours: int = 24) -> Optional[pd.DataFrame]:
@@ -71,40 +72,29 @@ class CacheManager:
             # Load cached data
             with open(cache_file, 'rb') as f:
                 df = pickle.load(f)
-                MAX_DAYS = 200
-                if df is not None and len(df) > MAX_DAYS:
-                    df = df.sort_values('Date').tail(MAX_DAYS).reset_index(drop=True)
+                if df is not None and len(df) > self.max_candles:
+                    df = df.sort_values('Date').tail(self.max_candles).reset_index(drop=True)
+            
             return df
             
-        except Exception as e:
-            print(f"   ⚠️  Error loading cache for {symbol}: {e}")
+        except Exception:
             return None
     
     def save_cached_data(self, symbol: str, df: pd.DataFrame, timeframe: str = 'daily'):
-        """
-        Save data to cache
-        
-        Args:
-            symbol: Stock symbol
-            df: DataFrame to cache
-            timeframe: 'daily' or 'hourly'
-        """
+        """Save data to cache"""
         cache_file = self.get_cache_file(symbol, timeframe)
         
         try:
             with open(cache_file, 'wb') as f:
                 pickle.dump(df, f)
-        except Exception as e:
-            print(f"   ⚠️  Error saving cache for {symbol}: {e}")
+        except Exception:
+            pass  # Silent fail for cache writes
     
     def merge_new_data(self, symbol: str, new_df: pd.DataFrame, 
                       cached_df: Optional[pd.DataFrame],
                       timeframe: str = 'daily') -> pd.DataFrame:
         """
         Merge new data with cached data
-        
-        For daily: Keep last 60 bars
-        For hourly: Keep last 120 bars
         
         Args:
             symbol: Stock symbol
@@ -116,7 +106,6 @@ class CacheManager:
             Merged DataFrame
         """
         if cached_df is None or cached_df.empty:
-            # No cache, return new data limited to max candles
             max_bars = 120 if timeframe == 'hourly' else 200
             return new_df.tail(max_bars).reset_index(drop=True)
         
@@ -142,19 +131,18 @@ class CacheManager:
             DataFrame with daily data or None
         """
         if not force_refresh:
-            # Try cache first
             cached_df = self.load_cached_data(symbol, 'daily', max_age_hours=24)
             if cached_df is not None:
                 return cached_df
         
-        # Cache miss or force refresh - fetch new data
+        # Cache miss - fetch new data
         new_df = fetch_func(symbol)
         
         if new_df is None or new_df.empty:
             return None
         
         # Merge with any existing cache
-        cached_df = self.load_cached_data(symbol, 'daily', max_age_hours=999999)  # Get even stale cache
+        cached_df = self.load_cached_data(symbol, 'daily', max_age_hours=999999)
         merged_df = self.merge_new_data(symbol, new_df, cached_df, 'daily')
         
         # Save to cache
@@ -175,25 +163,96 @@ class CacheManager:
             DataFrame with hourly data or None
         """
         if not force_refresh:
-            # Try cache first (4 hour expiry for hourly data)
             cached_df = self.load_cached_data(symbol, 'hourly', max_age_hours=4)
             if cached_df is not None:
                 return cached_df
         
-        # Cache miss or force refresh - fetch new data
+        # Cache miss - fetch new data
         new_df = fetch_func(symbol)
         
         if new_df is None or new_df.empty:
             return None
         
         # Merge with any existing cache
-        cached_df = self.load_cached_data(symbol, 'hourly', max_age_hours=999999)  # Get even stale cache
+        cached_df = self.load_cached_data(symbol, 'hourly', max_age_hours=999999)
         merged_df = self.merge_new_data(symbol, new_df, cached_df, 'hourly')
         
         # Save to cache
         self.save_cached_data(symbol, merged_df, 'hourly')
         
         return merged_df
+    
+    # ========================================================================
+    # ZONE CACHING - NEW OPTIMIZATION
+    # ========================================================================
+    
+    def load_cached_zones(self, symbol: str, max_age_hours: int = 24) -> Optional[List[Dict]]:
+        """
+        Load cached zones for symbol
+        
+        Args:
+            symbol: Stock symbol
+            max_age_hours: Maximum cache age in hours (default 24h)
+        
+        Returns:
+            List of zone dicts if cache valid, None otherwise
+        """
+        zone_file = self.zones_dir / f"{symbol}_zones.json"
+        
+        if not zone_file.exists():
+            return None
+        
+        try:
+            # Check cache age
+            cache_age = datetime.now() - datetime.fromtimestamp(zone_file.stat().st_mtime)
+            
+            if cache_age > timedelta(hours=max_age_hours):
+                return None
+            
+            # Load zones
+            with open(zone_file, 'r') as f:
+                zones = json.load(f)
+            
+            return zones
+            
+        except Exception:
+            return None
+    
+    def save_zones(self, symbol: str, zones: List[Dict]):
+        """
+        Save zones to cache
+        
+        Args:
+            symbol: Stock symbol
+            zones: List of zone dictionaries to cache
+        """
+        zone_file = self.zones_dir / f"{symbol}_zones.json"
+        
+        try:
+            with open(zone_file, 'w') as f:
+                json.dump(zones, f, indent=2)
+        except Exception:
+            pass  # Silent fail for cache writes
+    
+    def clear_zone_cache(self, symbol: Optional[str] = None):
+        """
+        Clear zone cache files
+        
+        Args:
+            symbol: Clear specific symbol (or all if None)
+        """
+        if symbol:
+            zone_file = self.zones_dir / f"{symbol}_zones.json"
+            if zone_file.exists():
+                zone_file.unlink()
+        else:
+            # Clear all zone files
+            for zone_file in self.zones_dir.glob("*_zones.json"):
+                zone_file.unlink()
+    
+    # ========================================================================
+    # CACHE MANAGEMENT
+    # ========================================================================
     
     def clear_cache(self, symbol: Optional[str] = None, timeframe: Optional[str] = None):
         """
@@ -204,27 +263,26 @@ class CacheManager:
             timeframe: Clear specific timeframe (or all if None)
         """
         if symbol and timeframe:
-            # Clear specific file
             cache_file = self.get_cache_file(symbol, timeframe)
             if os.path.exists(cache_file):
                 os.remove(cache_file)
-                print(f"   🗑️  Cleared cache for {symbol} {timeframe}")
         
         elif symbol:
-            # Clear all timeframes for symbol
             for tf in ['daily', 'hourly']:
                 cache_file = self.get_cache_file(symbol, tf)
                 if os.path.exists(cache_file):
                     os.remove(cache_file)
-            print(f"   🗑️  Cleared all cache for {symbol}")
         
         else:
             # Clear entire cache directory
             import shutil
-            if os.path.exists(self.cache_dir):
+            if self.cache_dir.exists():
                 shutil.rmtree(self.cache_dir)
-                os.makedirs(self.cache_dir)
-                print(f"   🗑️  Cleared entire cache directory")
+                # Recreate all subdirectories
+                self.cache_dir.mkdir(parents=True)
+                self.zones_dir.mkdir(parents=True)
+                self.ohlcv_dir.mkdir(parents=True)
+                self.indicators_dir.mkdir(parents=True)
     
     def get_cache_info(self) -> dict:
         """
@@ -233,87 +291,22 @@ class CacheManager:
         Returns:
             Dict with cache statistics
         """
-        cache_files = [f for f in os.listdir(self.cache_dir) if f.endswith('.pkl')]
+        ohlcv_files = list(self.ohlcv_dir.glob("*.pkl"))
+        zone_files = list(self.zones_dir.glob("*_zones.json"))
+        indicator_files = list(self.indicators_dir.glob("*.pkl")) + list(self.indicators_dir.glob("*.json"))
         
-        total_size = 0
-        for f in cache_files:
-            file_path = os.path.join(self.cache_dir, f)
-            total_size += os.path.getsize(file_path)
+        total_size = sum(f.stat().st_size for f in ohlcv_files + zone_files + indicator_files)
         
         return {
-            'total_files': len(cache_files),
+            'ohlcv_files': len(ohlcv_files),
+            'zone_files': len(zone_files),
+            'indicator_files': len(indicator_files),
+            'total_files': len(ohlcv_files) + len(zone_files) + len(indicator_files),
             'total_size_mb': total_size / (1024 * 1024),
-            'cache_dir': self.cache_dir
+            'cache_dir': str(self.cache_dir),
+            'subdirs': {
+                'ohlcv': str(self.ohlcv_dir),
+                'zones': str(self.zones_dir),
+                'indicators': str(self.indicators_dir)
+            }
         }
-
-
-# Quick test function
-def test_cache_manager():
-    """Test cache manager"""
-    import pandas as pd
-    from datetime import datetime, timedelta
-    
-    print("🧪 Testing Cache Manager")
-    print("=" * 60)
-    
-    # Initialize cache manager
-    cache_mgr = CacheManager(cache_dir="cache_test")
-    
-    # Create sample data
-    dates = pd.date_range(end=datetime.now(), periods=200, freq='D')
-    sample_df = pd.DataFrame({
-        'Date': dates,
-        'Open': [100 + i for i in range(200)],
-        'High': [102 + i for i in range(200)],
-        'Low': [98 + i for i in range(200)],
-        'Close': [101 + i for i in range(200)],
-        'Volume': [1000000] * 200
-    })
-    
-    symbol = 'TEST'
-    
-    # Test save
-    print(f"\n💾 Saving test data for {symbol}...")
-    cache_mgr.save_cached_data(symbol, sample_df, 'daily')
-    print("   ✅ Saved")
-    
-    # Test load
-    print(f"\n📂 Loading cached data for {symbol}...")
-    loaded_df = cache_mgr.load_cached_data(symbol, 'daily')
-    
-    if loaded_df is not None:
-        print(f"   ✅ Loaded {len(loaded_df)} rows")
-        print(f"   Date range: {loaded_df['Date'].min()} to {loaded_df['Date'].max()}")
-    else:
-        print("   ❌ Failed to load")
-    
-    # Test merge
-    print(f"\n🔀 Testing merge with new data...")
-    new_dates = pd.date_range(start=dates[-1] + timedelta(days=1), periods=5, freq='D')
-    new_df = pd.DataFrame({
-        'Date': new_dates,
-        'Open': [160 + i for i in range(5)],
-        'High': [162 + i for i in range(5)],
-        'Low': [158 + i for i in range(5)],
-        'Close': [161 + i for i in range(5)],
-        'Volume': [1000000] * 5
-    })
-    
-    merged_df = cache_mgr.merge_new_data(symbol, new_df, loaded_df, 'daily')
-    print(f"   ✅ Merged: {len(loaded_df)} + {len(new_df)} → {len(merged_df)} rows") # type: ignore
-    
-    # Test cache info
-    print(f"\n📊 Cache statistics:")
-    info = cache_mgr.get_cache_info()
-    print(f"   Files: {info['total_files']}")
-    print(f"   Size: {info['total_size_mb']:.2f} MB")
-    
-    # Cleanup
-    cache_mgr.clear_cache()
-    print(f"\n🗑️  Test cache cleaned up")
-    
-    print("\n✅ Cache manager test complete!")
-
-
-if __name__ == "__main__":
-    test_cache_manager()

@@ -1,42 +1,73 @@
-# indicators/gap_detector.py - Gap Edge Detection (HOURLY)
+# indicators/gap_detector.py - Gap Edge Detection (UPDATED v5.0)
 """
 Detect price gaps on HOURLY timeframe
 - Gap up: This hour's low > Last hour's high
 - Gap down: This hour's high < Last hour's low
 - Track unfilled gaps (strong S/R magnets)
+- V5.0: New thresholds (1.5% OR 0.3Ã—ATR) + decay for filled gaps
 - Works on 130 hourly candles
 """
 
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
 class GapDetector:
     """
     Detect price gaps on HOURLY data that create S/R zones
+    V5.0: Enhanced with ATR-based detection and fill decay
     """
     
-    def __init__(self, min_gap_pct: float = 0.2, max_gaps: int = 8):
+    def __init__(
+        self, 
+        min_gap_pct: Optional[float] = None,
+        min_gap_atr_mult: Optional[float] = None,
+        filled_decay: Optional[float] = None,
+        max_gaps: int = 8,
+        config=None
+    ):
         """
         Initialize gap detector for HOURLY data
         
         Args:
-            min_gap_pct: Minimum gap size as % (default: 0.2% for hourly)
+            min_gap_pct: Minimum gap size as % (default: 1.5% from config)
+            min_gap_atr_mult: Minimum gap size as ATR multiplier (default: 0.3)
+            filled_decay: Weight decay for filled gaps (default: 0.7)
             max_gaps: Maximum gaps to return (default: 8)
+            config: Configuration module with GAP_ settings
         """
-        self.min_gap_pct = min_gap_pct
+        # Load from config if available
+        if config:
+            self.min_gap_pct = config.GAP_PCT_MIN if hasattr(config, 'GAP_PCT_MIN') else 0.015
+            self.min_gap_atr_mult = config.GAP_SIZE_MIN_ATR if hasattr(config, 'GAP_SIZE_MIN_ATR') else 0.30
+            self.filled_decay = config.GAP_DECAY_FILLED if hasattr(config, 'GAP_DECAY_FILLED') else 0.7
+        else:
+            self.min_gap_pct = min_gap_pct if min_gap_pct is not None else 0.015  # 1.5%
+            self.min_gap_atr_mult = min_gap_atr_mult if min_gap_atr_mult is not None else 0.30
+            self.filled_decay = filled_decay if filled_decay is not None else 0.7
+        
         self.max_gaps = max_gaps
+        self.base_weight = 2  # Base weight for gaps
     
-    def detect_gaps(self, df: pd.DataFrame, current_price: float) -> List[Dict]:
+    def detect_gaps(
+        self, 
+        df: pd.DataFrame, 
+        current_price: float,
+        atr: Optional[float] = None
+    ) -> List[Dict]:
         """
         Detect all price gaps in HOURLY data
+        
+        V5.0: Uses dual threshold - gap detected if:
+            - gap_pct >= 1.5% OR gap_size >= 0.3Ã—ATR
         
         Args:
             df: DataFrame with HOURLY OHLC data (130 bars)
             current_price: Current stock price
+            atr: ATR for size threshold (optional, uses % only if None)
             
         Returns:
-            List of gap dicts with gap edges and fill status
+            List of gap dicts with gap edges, fill status, and weight
         """
         if len(df) < 2:
             return []
@@ -51,9 +82,15 @@ class GapDetector:
             # Gap Up: This hour's low > Last hour's high
             if curr_bar['Low'] > prev_bar['High']:
                 gap_size = curr_bar['Low'] - prev_bar['High']
-                gap_pct = (gap_size / prev_bar['High']) * 100
+                gap_pct = (gap_size / prev_bar['High'])
+                gap_size_atr = gap_size / atr if atr else 0
                 
-                if gap_pct >= self.min_gap_pct:
+                # V5.0: Dual threshold check
+                threshold_met = gap_pct >= self.min_gap_pct
+                if atr:
+                    threshold_met = threshold_met or gap_size_atr >= self.min_gap_atr_mult
+                
+                if threshold_met:
                     gap_bottom = prev_bar['High']
                     gap_top = curr_bar['Low']
                     
@@ -67,26 +104,39 @@ class GapDetector:
                             fill_timestamp = df.iloc[j]['Date']
                             break
                     
+                    # Calculate weight with decay for filled gaps
+                    weight = self.base_weight
+                    if filled:
+                        weight = weight * self.filled_decay
+                    
                     gaps.append({
                         'type': 'gap_up',
                         'gap_bottom': gap_bottom,
                         'gap_top': gap_top,
                         'gap_mid': (gap_bottom + gap_top) / 2,
                         'gap_size': gap_size,
-                        'gap_pct': gap_pct,
+                        'gap_pct': gap_pct * 100,  # Convert to percentage
+                        'gap_size_atr': gap_size_atr,
                         'timestamp': curr_bar['Date'],
                         'filled': filled,
                         'fill_timestamp': fill_timestamp,
                         'bars_ago': len(df) - i - 1,
-                        'above_current': gap_bottom > current_price
+                        'above_current': gap_bottom > current_price,
+                        'weight': weight  # V5.0: Added weight
                     })
             
             # Gap Down: This hour's high < Last hour's low
             elif curr_bar['High'] < prev_bar['Low']:
                 gap_size = prev_bar['Low'] - curr_bar['High']
-                gap_pct = (gap_size / prev_bar['Low']) * 100
+                gap_pct = (gap_size / prev_bar['Low'])
+                gap_size_atr = gap_size / atr if atr else 0
                 
-                if gap_pct >= self.min_gap_pct:
+                # V5.0: Dual threshold check
+                threshold_met = gap_pct >= self.min_gap_pct
+                if atr:
+                    threshold_met = threshold_met or gap_size_atr >= self.min_gap_atr_mult
+                
+                if threshold_met:
                     gap_top = prev_bar['Low']
                     gap_bottom = curr_bar['High']
                     
@@ -100,18 +150,25 @@ class GapDetector:
                             fill_timestamp = df.iloc[j]['Date']
                             break
                     
+                    # Calculate weight with decay for filled gaps
+                    weight = self.base_weight
+                    if filled:
+                        weight = weight * self.filled_decay
+                    
                     gaps.append({
                         'type': 'gap_down',
                         'gap_bottom': gap_bottom,
                         'gap_top': gap_top,
                         'gap_mid': (gap_bottom + gap_top) / 2,
                         'gap_size': gap_size,
-                        'gap_pct': gap_pct,
+                        'gap_pct': gap_pct * 100,  # Convert to percentage
+                        'gap_size_atr': gap_size_atr,
                         'timestamp': curr_bar['Date'],
                         'filled': filled,
                         'fill_timestamp': fill_timestamp,
                         'bars_ago': len(df) - i - 1,
-                        'above_current': gap_bottom > current_price
+                        'above_current': gap_bottom > current_price,
+                        'weight': weight  # V5.0: Added weight
                     })
         
         # Sort: unfilled first, then by recency, then by size
@@ -119,18 +176,24 @@ class GapDetector:
         
         return gaps[:self.max_gaps]
     
-    def get_gap_edges(self, df: pd.DataFrame, current_price: float) -> Dict[str, List[float]]:
+    def get_gap_edges(
+        self, 
+        df: pd.DataFrame, 
+        current_price: float,
+        atr: Optional[float] = None
+    ) -> Dict[str, List[float]]:
         """
         Get gap edges for zone creation
         
         Args:
             df: DataFrame with HOURLY OHLC data
             current_price: Current stock price
+            atr: ATR for threshold calculation (optional)
             
         Returns:
             Dict with 'support' and 'resistance' gap edge prices
         """
-        gaps = self.detect_gaps(df, current_price)
+        gaps = self.detect_gaps(df, current_price, atr)
         
         support_edges = []
         resistance_edges = []
@@ -156,7 +219,7 @@ def test_gap_detector():
     import pandas as pd
     from datetime import datetime, timedelta
     
-    print("🧪 Testing Gap Detector (HOURLY)")
+    print("Ã°Å¸Â§Âª Testing Gap Detector (HOURLY)")
     print("=" * 60)
     
     # Create 130 hours of sample data with gaps
@@ -192,15 +255,15 @@ def test_gap_detector():
     detector = GapDetector(min_gap_pct=0.2, max_gaps=8)
     
     # Detect gaps
-    print(f"\n🔍 Detecting Gaps on {len(df)} hourly bars...")
+    print(f"\nÃ°Å¸â€Â Detecting Gaps on {len(df)} hourly bars...")
     print(f"   Current Price: ${current_price:.2f}\n")
     
     gaps = detector.detect_gaps(df, current_price)
     
-    print(f"📊 DETECTED GAPS ({len(gaps)}):")
+    print(f"Ã°Å¸â€œÅ  DETECTED GAPS ({len(gaps)}):")
     for i, gap in enumerate(gaps, 1):
         status = "UNFILLED" if not gap['filled'] else "filled"
-        direction = "↑" if gap['type'] == 'gap_up' else "↓"
+        direction = "Ã¢â€ â€˜" if gap['type'] == 'gap_up' else "Ã¢â€ â€œ"
         position = "above" if gap['above_current'] else "below"
         
         print(f"\n   {i}. {gap['type'].upper()} {direction} [{status}]")
@@ -212,7 +275,7 @@ def test_gap_detector():
     # Get gap edges
     edges = detector.get_gap_edges(df, current_price)
     
-    print(f"\n🎯 GAP EDGES FOR ZONES:")
+    print(f"\nÃ°Å¸Å½Â¯ GAP EDGES FOR ZONES:")
     print(f"   Support edges: {len(edges['support'])}")
     for price in edges['support']:
         print(f"      ${price:.2f}")
@@ -221,7 +284,7 @@ def test_gap_detector():
     for price in edges['resistance']:
         print(f"      ${price:.2f}")
     
-    print("\n✅ Gap detector test complete!")
+    print("\nÃ¢Å“â€¦ Gap detector test complete!")
 
 
 if __name__ == "__main__":

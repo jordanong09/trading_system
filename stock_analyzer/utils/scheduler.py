@@ -180,6 +180,14 @@ class TradingScheduler:
         except Exception as e:
             self.logger.error(f"❌ Watchlist generation failed: {e}", exc_info=True)
     
+    def remove_all_jobs(self):
+        """Remove all scheduled jobs to prevent conflicts on restart"""
+        jobs = self.scheduler.get_jobs()
+        for job in jobs:
+            job.remove()
+        if jobs:
+            print(f"   ✅ Removed {len(jobs)} existing job(s)")
+    
     def schedule_hourly_scans(self) -> None:
         """
         Schedule hourly scans during market hours.

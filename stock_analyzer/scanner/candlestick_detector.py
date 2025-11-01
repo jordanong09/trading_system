@@ -702,6 +702,104 @@ class PatternDetector:
         # For now, skip doji patterns as they need context
         return None
     
+    # ============= MOMENTUM BREAKOUT PATTERNS =============
+    
+    def detect_momentum_break(
+        self,
+        df: pd.DataFrame,
+        atr_1h: float,
+        side: str,
+        index: int = -1,
+        cfg: Optional[Dict] = None
+    ) -> Optional[Dict]:
+        """
+        Momentum candle breakout pattern
+        
+        A strong directional candle with:
+        - Large real body (≥65% of range)
+        - Small wicks (≤20% each)
+        - Size ≥0.5× ATR(20 on 1H)
+        - High relative volume (≥1.5×)
+        
+        Args:
+            df: DataFrame with HOURLY OHLC data
+            atr_1h: ATR(20) calculated on hourly timeframe
+            side: 'bullish' or 'bearish'
+            index: Index to check (default -1 for latest)
+            cfg: Config dict with thresholds
+        
+        Returns:
+            Pattern dict if detected, None otherwise
+        """
+        if len(df) < 1:
+            return None
+        
+        # Default config
+        if cfg is None:
+            cfg = {
+                'min_body_pct': 0.65,
+                'max_wick_pct': 0.20,
+                'min_range_atr_mult': 0.5,
+                'min_rv': 1.5
+            }
+        
+        candle = df.iloc[index]
+        
+        # Calculate candle metrics
+        body = abs(candle['Close'] - candle['Open'])
+        total_range = candle['High'] - candle['Low']
+        
+        if total_range <= 0 or atr_1h <= 0:
+            return None
+        
+        body_pct = body / total_range
+        upper_wick = candle['High'] - max(candle['Open'], candle['Close'])
+        lower_wick = min(candle['Open'], candle['Close']) - candle['Low']
+        uw_pct = upper_wick / total_range
+        lw_pct = lower_wick / total_range
+        
+        # Check shape requirements
+        if body_pct < cfg['min_body_pct']:
+            return None
+        
+        if uw_pct > cfg['max_wick_pct'] or lw_pct > cfg['max_wick_pct']:
+            return None
+        
+        if total_range < cfg['min_range_atr_mult'] * atr_1h:
+            return None
+        
+        # Check directional requirement
+        if side == 'bullish' and not (candle['Close'] > candle['Open']):
+            return None
+        
+        if side == 'bearish' and not (candle['Close'] < candle['Open']):
+            return None
+        
+        # Check volume
+        rv = self.calculate_relative_volume(df, index)
+        if rv < cfg['min_rv']:
+            return None
+        
+        # Pattern detected
+        pattern_name = 'Momentum Break (Bullish)' if side == 'bullish' else 'Momentum Break (Bearish)'
+        
+        return {
+            'pattern': pattern_name,
+            'bias': 'bullish' if side == 'bullish' else 'bearish',
+            'side': 'long' if side == 'bullish' else 'short',
+            'timestamp': candle['Date'],
+            'price': candle['Close'],
+            'volume': candle['Volume'],
+            'relative_volume': rv,
+            'quality': 'high' if rv >= self.rv_high else 'medium',
+            'momentum_metrics': {
+                'body_pct': body_pct,
+                'upper_wick_pct': uw_pct,
+                'lower_wick_pct': lw_pct,
+                'range_atr_ratio': total_range / atr_1h
+            }
+        }
+    
     # ============= MAIN DETECTION METHOD =============
     
     def detect_patterns(self, df: pd.DataFrame, index: int = -1) -> Optional[Dict]:
@@ -774,14 +872,14 @@ def test_pattern_detector():
     import pandas as pd
     from datetime import datetime, timedelta
     
-    print("🧪 Testing Expanded Pattern Detector (P2)")
+    print("ðŸ§ª Testing Expanded Pattern Detector (P2)")
     print("=" * 60)
     
     config = {'rv_requirements': {'high': 1.5, 'medium': 1.2}}
     detector = PatternDetector(config)
     
     # Test Morning Star
-    print("\n📊 Testing Morning Star...")
+    print("\nðŸ“Š Testing Morning Star...")
     dates = [datetime.now() - timedelta(hours=i) for i in range(10, -1, -1)]
     df = pd.DataFrame({
         'Date': dates[-3:],
@@ -793,10 +891,10 @@ def test_pattern_detector():
     })
     
     pattern = detector.detect_morning_star(df)
-    print(f"   {'✅ Detected' if pattern else '❌ Not detected'}: {pattern['pattern'] if pattern else 'None'}")
+    print(f"   {'âœ… Detected' if pattern else 'âŒ Not detected'}: {pattern['pattern'] if pattern else 'None'}")
     
     # Test Three White Soldiers
-    print("\n📊 Testing Three White Soldiers...")
+    print("\nðŸ“Š Testing Three White Soldiers...")
     df = pd.DataFrame({
         'Date': dates[-3:],
         'Open': [100, 101, 102],
@@ -807,10 +905,10 @@ def test_pattern_detector():
     })
     
     pattern = detector.detect_three_white_soldiers(df)
-    print(f"   {'✅ Detected' if pattern else '❌ Not detected'}: {pattern['pattern'] if pattern else 'None'}")
+    print(f"   {'âœ… Detected' if pattern else 'âŒ Not detected'}: {pattern['pattern'] if pattern else 'None'}")
     
     # Test Hammer
-    print("\n📊 Testing Hammer...")
+    print("\nðŸ“Š Testing Hammer...")
     df = pd.DataFrame({
         'Date': dates[-1:],
         'Open': [100],
@@ -821,10 +919,10 @@ def test_pattern_detector():
     })
     
     pattern = detector.detect_hammer(df)
-    print(f"   {'✅ Detected' if pattern else '❌ Not detected'}: {pattern['pattern'] if pattern else 'None'}")
+    print(f"   {'âœ… Detected' if pattern else 'âŒ Not detected'}: {pattern['pattern'] if pattern else 'None'}")
     
-    print("\n✅ Pattern detector P2 test complete!")
-    print(f"\n📋 Total patterns available: 12")
+    print("\nâœ… Pattern detector P2 test complete!")
+    print(f"\nðŸ“‹ Total patterns available: 12")
     print("   - Bullish Engulfing, Bearish Engulfing")
     print("   - Hammer, Inverted Hammer, Shooting Star, Hanging Man")
     print("   - Morning Star, Evening Star")

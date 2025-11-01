@@ -183,9 +183,6 @@ class AlphaVantageAPI:
         if data is None:
             return None
         
-        # Save to cache
-        self._save_to_cache(cache_path, data)
-        
         # Parse and return
         return self._parse_daily_data(data)
     
@@ -270,9 +267,6 @@ class AlphaVantageAPI:
         
         if data is None:
             return None
-        
-        # Save to cache
-        self._save_to_cache(cache_path, data)
         
         # Parse and return
         return self._parse_hourly_data(data)

@@ -28,7 +28,7 @@ def get_env_variable(var_name: str, default: Optional[str] = None) -> Optional[s
     if value is None or value == "" or value == "your_key_here":
         if default is None:
             raise ValueError(
-                f"❌ ERROR: {var_name} not set in environment!\n"
+                f"âŒ ERROR: {var_name} not set in environment!\n"
                 f"Set it with: export {var_name}='your_value'\n"
                 f"Then restart terminal."
             )
@@ -46,14 +46,14 @@ try:
     TELEGRAM_CHAT_ID = get_env_variable('TELEGRAM_CHAT_ID', 'test_id')
     
     if ALPHA_VANTAGE_API_KEY != 'demo':
-        print("✅ API keys loaded securely from environment variables")
+        print("âœ… API keys loaded securely from environment variables")
     else:
-        print("⚠️  WARNING: Using demo/test mode")
+        print("âš ï¸  WARNING: Using demo/test mode")
         print("Set environment variables for production!\n")
     
 except ValueError as e:
     print(f"\n{e}")
-    print("\n⚠️  WARNING: Using demo/test mode")
+    print("\nâš ï¸  WARNING: Using demo/test mode")
     print("Set environment variables for production!\n")
     
     # Fallback for initial testing only
@@ -66,14 +66,45 @@ except ValueError as e:
 # PATHS (Cross-platform compatible)
 # ============================================================================
 
-CACHE_DIRECTORY = "cache"
-OUTPUT_DIRECTORY = "output"
-LOG_DIRECTORY = "logs"
-DATA_DIRECTORY = "data"
+# Base storage directory structure (matches your architecture)
+STORAGE_DIR = Path("storage")
+CACHE_DIR = STORAGE_DIR / "cache"
+INPUT_DIR = STORAGE_DIR / "input"
+OUTPUT_DIR = STORAGE_DIR / "output"
 
-# Ensure directories exist
-for directory in [CACHE_DIRECTORY, OUTPUT_DIRECTORY, LOG_DIRECTORY, DATA_DIRECTORY]:
-    Path(directory).mkdir(parents=True, exist_ok=True)
+# Cache subdirectories (for organized data storage)
+CACHE_ZONES_DIR = CACHE_DIR / "zones"
+CACHE_OHLCV_DIR = CACHE_DIR / "ohlcv"
+CACHE_INDICATORS_DIR = CACHE_DIR / "indicators"
+
+# Output subdirectories
+OUTPUT_WATCHLISTS_DIR = OUTPUT_DIR / "watchlists"
+OUTPUT_SIGNALS_DIR = OUTPUT_DIR / "signals"
+OUTPUT_LOGS_DIR = OUTPUT_DIR / "logs"
+
+# Legacy string paths (for backward compatibility with existing code)
+CACHE_DIRECTORY = str(CACHE_DIR)
+OUTPUT_DIRECTORY = str(OUTPUT_DIR)
+LOG_DIRECTORY = str(OUTPUT_LOGS_DIR)
+DATA_DIRECTORY = str(INPUT_DIR)
+
+# Create all required directories
+REQUIRED_DIRS = [
+    INPUT_DIR,
+    CACHE_DIR,
+    CACHE_ZONES_DIR,
+    CACHE_OHLCV_DIR,
+    CACHE_INDICATORS_DIR,
+    OUTPUT_DIR,
+    OUTPUT_WATCHLISTS_DIR,
+    OUTPUT_SIGNALS_DIR,
+    OUTPUT_LOGS_DIR,
+]
+
+for directory in REQUIRED_DIRS:
+    directory.mkdir(parents=True, exist_ok=True)
+
+print(f"âœ… Storage structure created at: {STORAGE_DIR.absolute()}")
 
 
 # ============================================================================
@@ -93,10 +124,10 @@ STOCK_UNIVERSE = {
 # ============================================================================
 
 ZONE_CONFIG = {
-    'atr_multiplier': 0.30,       # ±0.30×ATR for zone bands
+    'atr_multiplier': 0.15,       # Â±0.15Ã—ATR for zone bands
     'max_distance_atr': 0.35,     # Max distance for trigger eligibility
-    'ema20_slope_strong': 0.10,   # |slope| >= 0.10 → strong
-    'ema20_slope_moderate': 0.05, # 0.05-0.10 → moderate
+    'ema20_slope_strong': 0.10,   # |slope| >= 0.10 â†’ strong
+    'ema20_slope_moderate': 0.05, # 0.05-0.10 â†’ moderate
     'recent_touch_decay': 0.98,   # 0.98^days decay factor
     'stack_bonus': 0.5            # Points for aligned MAs
 }
@@ -126,12 +157,12 @@ COMPONENT_WEIGHTS = {
 
 CONFLUENCE_THRESHOLDS = {
     # Thresholds for watchlist stocks (already tracked)
-    'watchlist_high': 7.0,        # High quality from watchlist: ≥7/10
-    'watchlist_medium': 5.0,      # Medium quality from watchlist: ≥5/10
+    'watchlist_high': 7.0,        # High quality from watchlist: â‰¥7/10
+    'watchlist_medium': 5.0,      # Medium quality from watchlist: â‰¥5/10
     
     # Thresholds for new stocks (not on watchlist)
-    'new_high': 8.0,              # High quality for new: ≥8/10
-    'new_medium': 7.0             # Medium quality for new: ≥7/10
+    'new_high': 8.0,              # High quality for new: â‰¥8/10
+    'new_medium': 7.0             # Medium quality for new: â‰¥7/10
 }
 
 
@@ -141,9 +172,9 @@ CONFLUENCE_THRESHOLDS = {
 
 RV_REQUIREMENTS = {
     'minimum': 1.2,               # Minimum RV to consider pattern
-    'high': 1.5,                  # RV >= 1.5 → High quality signal
-    'medium': 1.2,                # RV >= 1.2 → Medium quality signal
-    'lookback_periods': 20        # Periods for average volume calculation
+    'high': 1.5,                  # RV >= 1.5 â†’ High quality signal
+    'medium': 1.2,                # RV >= 1.2 â†’ Medium quality signal
+    'lookback_periods': 10        # Periods for average volume calculation
 }
 
 
@@ -169,7 +200,7 @@ WEEKLY_WATCHLIST = {
 
 EOD_UPDATE = {
     'enabled': False,                         # Optional - set True to enable
-    'shift_threshold': 0.5,                   # Alert if zone shifts >0.5×ATR
+    'shift_threshold': 0.5,                   # Alert if zone shifts >0.5Ã—ATR
     'update_days': 'mon-thu',                 # Days to run update
     'update_hour': 17,                        # Hour to run (17:00 ET)
     'update_minute': 0,
@@ -260,43 +291,43 @@ def validate_configuration() -> bool:
     
     # Check API keys
     if ALPHA_VANTAGE_API_KEY in ["demo", "test"]:
-        issues.append("⚠️  Alpha Vantage API key not set")
+        issues.append("âš ï¸  Alpha Vantage API key not set")
     
     if TELEGRAM_BOT_TOKEN in ["test_token", "test"]:
-        issues.append("⚠️  Telegram bot token not set")
+        issues.append("âš ï¸  Telegram bot token not set")
     
     if TELEGRAM_CHAT_ID in ["test_id", "test"]:
-        issues.append("⚠️  Telegram chat ID not set")
+        issues.append("âš ï¸  Telegram chat ID not set")
     
     # Check directories exist
     for directory in [CACHE_DIRECTORY, OUTPUT_DIRECTORY, LOG_DIRECTORY, DATA_DIRECTORY]:
         if not Path(directory).exists():
             Path(directory).mkdir(parents=True, exist_ok=True)
-            print(f"📁 Created directory: {directory}")
+            print(f"ðŸ“ Created directory: {directory}")
     
     # Validate weekly watchlist config
     if WEEKLY_WATCHLIST['enabled']:
         if WEEKLY_WATCHLIST['min_confluence'] < 5.0:
-            issues.append("⚠️  Weekly watchlist min_confluence should be >= 5.0")
+            issues.append("âš ï¸  Weekly watchlist min_confluence should be >= 5.0")
     
     # Validate EOD config
     if EOD_UPDATE['enabled']:
         if EOD_UPDATE['shift_threshold'] <= 0:
-            issues.append("⚠️  EOD shift_threshold must be > 0")
+            issues.append("âš ï¸  EOD shift_threshold must be > 0")
     
     # Validate Telegram threading config
     if TELEGRAM_THREADING['enabled']:
-        print("ℹ️  Telegram threading enabled - requires Supergroup with Topics")
+        print("â„¹ï¸  Telegram threading enabled - requires Supergroup with Topics")
     
     # Report issues
     if issues:
-        print("\n⚠️  CONFIGURATION WARNINGS:")
+        print("\nâš ï¸  CONFIGURATION WARNINGS:")
         for issue in issues:
             print(f"   {issue}")
         print("\nSet environment variables for production use.\n")
         return False
     else:
-        print("✅ Configuration validated successfully")
+        print("âœ… Configuration validated successfully")
         return True
 
 
